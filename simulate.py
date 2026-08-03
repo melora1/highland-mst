@@ -19,7 +19,8 @@ import os
 import numpy as np
 import pandas as pd
 
-from config import (BEAM_MODE, BL, MOM_BITE, N_PER_SETTING, OUT_DIR, SEED_BASE,
+from config import (BEAM_MODE, BL, MOM_BITE, N_PER_SETTING, OUT_DIR,
+                    RASTER_HALF, RASTER_NX, RASTER_NY, SEED_BASE,
                     STEER_COMPENSATION,
                     SIGMA_DIV, SIGMA_HIT, SIGMA_XY, STATION_Z, THETA_CUT,
                     UNIFORM_HALF, Z_MAGNET_CM)
@@ -67,6 +68,18 @@ def simulate_setting(p_set, n=N_PER_SETTING, mode="moliere", seed_offset=0,
         # double-compensates.
         x0 = rng.uniform(-UNIFORM_HALF, UNIFORM_HALF, n)
         y0 = rng.uniform(-UNIFORM_HALF, UNIFORM_HALF, n)
+    elif BEAM_MODE == "raster":
+        # sigma_xy pencil beam scanned over an NX x NY grid of center
+        # positions, equal exposure per node (tiled, not randomly assigned,
+        # so exposure is exactly uniform across nodes even at modest n).
+        cx = np.linspace(-RASTER_HALF, RASTER_HALF, RASTER_NX)
+        cy = np.linspace(-RASTER_HALF, RASTER_HALF, RASTER_NY)
+        nodes = np.array([(a, b) for a in cx for b in cy])   # (RASTER_NX*RASTER_NY, 2)
+        node_idx = np.arange(n) % nodes.shape[0]
+        rng.shuffle(node_idx)                                  # decorrelate from hit order
+        centers = nodes[node_idx]
+        x0 = centers[:, 0] + rng.normal(0.0, SIGMA_XY, n)
+        y0 = centers[:, 1] + rng.normal(0.0, SIGMA_XY, n)
     else:
         raise ValueError(f"unknown BEAM_MODE {BEAM_MODE!r}")
     tx0 = rng.normal(0.0, SIGMA_DIV, n)     # slope dx/dz, pre-magnet

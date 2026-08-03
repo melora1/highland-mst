@@ -51,26 +51,44 @@ MOM_BITE = 0.01       # fractional, Gaussian
 
 # BEAM_MODE -- this is a SPEC DECISION, not a tuning knob. See README.
 #
-#   'pencil'  sigma_xy = SIGMA_XY Gaussian spot. This is what the paper's
-#             Sec. 4.1 specifies. Combined with the dipole, which steers the
-#             beam by 0.3*B*L/p * |Z_MAGNET_CM| = 5.85/p cm at the target
-#             (5.84 cm at 1 GeV/c down to 0.97 cm at 6), each momentum lights
-#             a ~2 cm strip at a different x with y pinned near 0. The Pb
-#             inclusion at (3,2) is then only clipped at its bottom edge and
-#             Branch B has no tomogram to reconstruct. Branch A is unaffected
-#             -- it needs scattering angles, not an image.
+#   'pencil'  sigma_xy = SIGMA_XY Gaussian spot, single fixed position. This
+#             is what an earlier draft of Sec. 4.1 specified. Combined with
+#             the dipole, which steers the beam by 0.3*B*L/p * |Z_MAGNET_CM|
+#             = 5.85/p cm at the target (5.84 cm at 1 GeV/c down to 0.97 cm
+#             at 6) when STEER_COMPENSATION='none', each momentum lights a
+#             ~2 cm strip at a different x with y pinned near 0. Even with
+#             STEER_COMPENSATION='per_setting' (on axis), a single sigma_xy=1
+#             cm spot only covers a 7.7 cm (95%) span against the 15 cm Cu
+#             block -- test_beam_covers_target_face fails under this mode by
+#             design; there is no tomogram to reconstruct.
 #
 #   'uniform' Flat illumination over UNIFORM_HALF in x and y, covering the
-#             full Cu face. Retains the momentum-dependent steering (each p is
-#             still offset by 5.85/p cm), so the momentum-position correlation
-#             that Sec. 2.3's artifact mechanism relies on survives, but every
-#             voxel is lit. Required for any Branch B result.
+#             full Cu face. Solves coverage but is not how a tagged momentum
+#             beam is actually operated (real facilities do not flood a
+#             target uniformly with a characterized beam).
 #
-# Default is 'pencil' so the code matches the paper as written. Branch B will
-# fail its illumination test in that mode -- deliberately.
-BEAM_MODE = "pencil"
-SIGMA_XY = 1.0        # cm, used when BEAM_MODE == 'pencil'
+#   'raster'  DEFAULT. A sigma_xy=SIGMA_XY pencil beam, as in 'pencil', swept
+#             over an RASTER_NX x RASTER_NY grid of center positions spanning
+#             the Cu face (RASTER_HALF in x and y), with equal exposure per
+#             node. This is how tagged-beam tomography facilities actually
+#             cover an extended target: narrow, well-characterized spot,
+#             scanned. Retains the momentum-dependent dipole steering
+#             (STEER_COMPENSATION still applies on top of the raster grid),
+#             so the momentum-position correlation Sec. 2.3's artifact
+#             mechanism needs is whatever STEER_COMPENSATION leaves behind --
+#             the raster grid itself carries no p-dependence.
+#
+BEAM_MODE = "raster"
+SIGMA_XY = 1.0        # cm, used when BEAM_MODE in ('pencil', 'raster')
 UNIFORM_HALF = 11.0   # cm, used when BEAM_MODE == 'uniform'
+
+# Raster grid: node spacing chosen so 3*SIGMA_XY overlap between adjacent
+# nodes gives near-uniform effective coverage, out to +/- RASTER_HALF, which
+# comfortably spans the Cu block (CU_HALF = 7.5 cm) including corners once
+# spot width is added.
+RASTER_NX = 7
+RASTER_NY = 7
+RASTER_HALF = 7.5     # cm; node centers span [-7.5, +7.5] in x and y
 
 # STEER_COMPENSATION -- the decisive knob for Sec. 2.3, more so than BEAM_MODE.
 #
