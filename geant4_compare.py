@@ -23,8 +23,9 @@ Usage:
 """
 import argparse, math, sys
 import numpy as np
-from moliere import moliere_params, theta0_highland
-from quadrature import theta_rms
+from config import MATERIALS
+from kinematics import theta_space_highland
+from eps_quadrature import theta_RMS_at_cut
 
 # published model spread (Makarova 2017, thickness-averaged), fractional
 MODEL_SPREAD = {"urban": 0.08, "wentzel": 0.04}   # low-Z worst case; Pb ~4%
@@ -64,17 +65,25 @@ def main(argv=None):
     angles = load_angles(a.file)
     g4_rms, n_keep, n_tot = in_acceptance_rms(angles, a.theta_cut)
 
-    path = [(a.material, a.thickness_cm)]
-    mp = moliere_params(path, a.p)
-    q_rms = theta_rms(a.theta_cut, mp)
-    t0 = theta0_highland(a.p, mp["xX0"])
-    tspace = math.sqrt(2.0)*t0
+    # single-material slab: areal density X (g/cm^2) = rho * thickness_cm;
+    # the other two materials' X are zero (eps_quadrature.theta_RMS_at_cut
+    # takes X_al, X_cu, X_pb explicitly -- matches the real repo's moliere.py
+    # combine_path signature, which needs all three even for one material).
+    rho = MATERIALS[a.material]["rho"]
+    X = rho * a.thickness_cm
+    X_al = X if a.material == "Al" else 0.0
+    X_cu = X if a.material == "Cu" else 0.0
+    X_pb = X if a.material == "Pb" else 0.0
+    xX0 = a.thickness_cm / MATERIALS[a.material]["X0"]
+
+    q_rms = float(theta_RMS_at_cut(a.p, X_al, X_cu, X_pb, a.theta_cut)[0])
+    tspace = float(theta_space_highland(a.p, xX0))
 
     frac_diff = (g4_rms - q_rms)/q_rms
     tol = MODEL_SPREAD[a.model] + PLANAR_SYS
     verdict = "PASS" if abs(frac_diff) <= tol else "OUTSIDE BUDGET"
 
-    print(f"material={a.material}  p={a.p} GeV/c  x/X0={mp['xX0']:.3f}  "
+    print(f"material={a.material}  p={a.p} GeV/c  x/X0={xX0:.3f}  "
           f"cut={a.theta_cut*1e3:.0f} mrad  model={a.model}")
     print(f"  events: {n_keep}/{n_tot} inside acceptance "
           f"({100*n_keep/n_tot:.2f}%)")

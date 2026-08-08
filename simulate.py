@@ -150,6 +150,7 @@ def simulate_setting(p_set, n=N_PER_SETTING, mode="moliere", seed_offset=0,
     u_rec /= np.linalg.norm(u_rec, axis=1, keepdims=True)
     rAl, rCu, rPb = trace_ref(o_rec, u_rec)
     xx0_ref = x_over_X0(rAl, rCu, rPb)
+    X_al_ref, X_cu_ref, X_pb_ref = areal_densities(rAl, rCu, rPb)  # X_pb_ref == 0 always
 
     # ---------------------------------------------------------- 5. scatter
     hit_target = xx0_true > 0.0
@@ -218,6 +219,7 @@ def simulate_setting(p_set, n=N_PER_SETTING, mode="moliere", seed_offset=0,
         dth_reco=dth_reco,
         xx0_true=xx0_true,
         xx0_ref=xx0_ref,
+        X_al_ref=X_al_ref, X_cu_ref=X_cu_ref, X_pb_ref=X_pb_ref,
         t_Al=tAl, t_Cu=tCu, t_Pb=tPb,
         poca_x=poca[:, 0], poca_y=poca[:, 1], poca_z=poca[:, 2],
     ))
