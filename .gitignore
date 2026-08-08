@@ -52,3 +52,80 @@ _fn_projected.npz
 
 # local reduced-statistics repro harness
 _repro.py
+
+
+# =========================
+# Build directories
+# =========================
+build/
+cmake-build-*/
+_build/
+out/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+install_manifest.txt
+CTestTestfile.cmake
+compile_commands.json
+
+# =========================
+# Geant4
+# =========================
+geant4/build/
+geant4/output/
+geant4/results/
+geant4/*.root
+geant4/*.csv
+geant4/*.dat
+geant4/*.log
+
+# Geant4 visualization / generated files
+*.gdml.bak
+
+# =========================
+# Compiled binaries
+# =========================
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.exe
+*.out
+
+# =========================
+# Debug / profiling
+# =========================
+*.dSYM/
+*.prof
+*.profraw
+*.gcda
+*.gcno
+*.gcov
+
+# =========================
+# IDEs / editors
+# =========================
+.vscode/
+.idea/
+*.code-workspace
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Temporary files
+# =========================
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
