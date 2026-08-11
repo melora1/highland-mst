@@ -221,21 +221,21 @@ def speckle_metric(img, counts, min_count=20, n_boot=500, rng=None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--n", type=int, default=500_000,
-                    help="muons per momentum setting (default 500000 = manuscript scale)")
-    ap.add_argument("--seed", type=int, default=0,
-                    help="RNG seed for event generation")
+    ap.add_argument("--n", type=int, default=500_000)
+    ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--outdir", default=OUT_DIR)
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
 
-    # ------------------------------------------------------------------ simulate
+    from moliere import MoliereSampler
+    sampler = MoliereSampler(nmax=2)
+
     print(f"Simulating {args.n} muons/setting x {len(MOMENTA)} settings "
           f"(seed={args.seed}) ...")
     frames = []
     for p in MOMENTA:
-        df = simulate.run_setting(p, n=args.n, seed=args.seed)
+        df = simulate.simulate_setting(p, n=args.n, seed_offset=args.seed, sampler=sampler)
         frames.append(df)
     cat = pd.concat(frames, ignore_index=True)
     print(f"Total events generated: {len(cat)}")

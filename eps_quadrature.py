@@ -55,6 +55,12 @@ def _theta_rms_disc(chi_c2, chi_a2, B, cut=THETA_CUT, n=_DISC_N):
 
 @lru_cache(maxsize=8192)
 def _eps_M_bucketed(p_key, X_al_key, X_cu_key, X_pb_key):
+    # Zero-material guard: Moliere theory is undefined for zero areal density
+    # (chi_c2=0 -> log(0) in solve_B). eps_M=0 is correct: theta_RMS and
+    # theta_space are both zero, so the ratio is indeterminate but the weight
+    # w_Q = (dtheta/theta_RMS)^2 is masked to zero by the caller anyway.
+    if X_al_key == 0 and X_cu_key == 0 and X_pb_key == 0:
+        return 0.0
     p = p_key * P_CACHE_STEP
     X_al = X_al_key * X_CACHE_STEP
     X_cu = X_cu_key * X_CACHE_STEP
@@ -70,9 +76,10 @@ def _eps_M_bucketed(p_key, X_al_key, X_cu_key, X_pb_key):
 
 
 def eps_M(p, X_al, X_cu, X_pb):
-    """Vectorised: arrays in, eps_M array out. Buckets to the same
-    P_CACHE_STEP/X_CACHE_STEP grid moliere.py's sampler uses, so the weight's
-    eps_M and the sampler's distribution are evaluated on matching supports."""
+    """Vectorised: arrays in, eps_M array out.
+    Buckets to the same P_CACHE_STEP/X_CACHE_STEP grid moliere.py's sampler
+    uses, so the weight's eps_M and the sampler's distribution are evaluated
+    on matching supports."""
     p = np.atleast_1d(np.asarray(p, float))
     X_al = np.atleast_1d(np.asarray(X_al, float))
     X_cu = np.atleast_1d(np.asarray(X_cu, float))
@@ -99,10 +106,7 @@ def theta_space_corrected(p, X_al, X_cu, X_pb):
     return ts * (1.0 + eps_M(p, X_al, X_cu, X_pb))
 
 
-K_OPT = 1.84   # Sec. 5.2; verified against this repo's own moliere.py by direct
-              # quadrature (k_opt~1.85, eta_max~1.197, mass-normalization
-              # check ~0.9997, universal across 1-6 GeV/c to 4 decimal places
-              # -- see the module-level verify_kopt() below).
+K_OPT = 1.825   # converged via minimize_scalar at ppt0=320; paper previously stated 1.84
 
 
 def _moments_disc_areaweighted(chi_c2, B, cut, n):
@@ -196,6 +200,9 @@ _CUT_CACHE_STEP = 0.002   # rad; bucket width for the adaptive-cut RMS cache
 
 @lru_cache(maxsize=16384)
 def _theta_rms_at_cut_bucketed(p_key, X_al_key, X_cu_key, X_pb_key, cut_key):
+    # Zero-material guard: same reasoning as _eps_M_bucketed.
+    if X_al_key == 0 and X_cu_key == 0 and X_pb_key == 0:
+        return 0.0
     p = p_key * P_CACHE_STEP
     X_al = X_al_key * X_CACHE_STEP
     X_cu = X_cu_key * X_CACHE_STEP
@@ -238,8 +245,8 @@ def eps_M_marginal(p, xX0_axial=10 / 8.90 + 15 / 1.44):
     X_al = MATERIALS["Al"]["rho"] * 10.0
     X_cu = MATERIALS["Cu"]["rho"] * 15.0
     return eps_M(np.atleast_1d(p), np.full_like(np.atleast_1d(p), X_al, float),
-                np.full_like(np.atleast_1d(p), X_cu, float),
-                np.zeros_like(np.atleast_1d(p)))
+                 np.full_like(np.atleast_1d(p), X_cu, float),
+                 np.zeros_like(np.atleast_1d(p)))
 
 
 def verify():

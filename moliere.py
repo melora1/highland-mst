@@ -128,9 +128,8 @@ def f2(eta):
     return np.where(tail, c2 / np.maximum(e, 1e-9) ** 4, out)
 
 
-
-
 # ------------------------------------------------------------------ chi_c, chi_a, B
+
 def chi_c2_single(Z, A, X, p_mev, beta):
     """Eq. (A2). X in g cm^-2, p in MeV/c."""
     return 0.157 * Z * (Z + 1.0) * X / A / (p_mev * beta) ** 2
@@ -169,8 +168,15 @@ def combine_path(X_al, X_cu, X_pb, p_gev):
 
 
 def solve_B(chi_c2, chi_a2, tol=1e-10, itmax=60):
-    """B - ln B = ln(chi_c^2 / (1.167 chi_a^2))  [Eq. (A5)], Newton."""
-    rhs = np.log(chi_c2 / (1.167 * chi_a2))
+    """B - ln B = ln(chi_c^2 / (1.167 chi_a^2))  [Eq. (A5)], Newton.
+
+    The errstate suppresses the divide-by-zero that fires when chi_c2=0
+    (zero areal density after bucketing). Callers that reach here with
+    chi_c2=0 are bugs -- the non-finite rhs check immediately below will
+    raise a clean ValueError rather than letting a RuntimeWarning propagate.
+    """
+    with np.errstate(divide='ignore', invalid='ignore'):
+        rhs = np.log(chi_c2 / (1.167 * chi_a2))
     if not np.isfinite(rhs):
         raise ValueError("non-finite Omega_0 in solve_B")
     if rhs < 1.0:
@@ -236,6 +242,10 @@ class MoliereSampler:
     Bucket widths are set in config (P_CACHE_STEP, X_CACHE_STEP). Rebuilding
     a CDF per event for 2e6 events is the throughput bottleneck; bucketing
     reduces it to O(10^3-10^4) unique keys.
+
+    Zero-material events (all three areal densities round to bucket 0) are
+    cached as None and returned as (0, 0) by sample(). They carry no
+    scattering and their weight is zero in all downstream estimators.
     """
 
     def __init__(self, nmax=2):
@@ -257,6 +267,13 @@ class MoliereSampler:
         X_cu = key[2] * X_CACHE_STEP
         X_pb = key[3] * X_CACHE_STEP
         chi_c2, chi_a2 = combine_path(X_al, X_cu, X_pb, p)
+        # Zero-material guard: combine_path returns chi_c2=0 when all
+        # areal densities are zero (raster-edge muons that miss the target).
+        # Moliere theory is undefined there; store None as sentinel and let
+        # sample() return (0, 0) so these events get weight 0 downstream.
+        if chi_c2 == 0.0:
+            self._cache[key] = None
+            return None
         B = solve_B(chi_c2, chi_a2)
         cdf, clipped = cdf_on_grid(chi_c2, B, nmax=self.nmax)
         self.max_clipped = max(self.max_clipped, clipped)
@@ -281,6 +298,12 @@ class MoliereSampler:
                 j += 1
             idx = order[i:j]
             cdf = self._get(ks[i])
+            if cdf is None:
+                # zero-material event: no scattering
+                tx[idx] = 0.0
+                ty[idx] = 0.0
+                i = j
+                continue
             u1 = rng.random(idx.size)
             u2 = rng.random(idx.size)
             tx[idx] = np.interp(u1, cdf, _THETA_GRID)
