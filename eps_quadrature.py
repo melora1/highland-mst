@@ -50,6 +50,8 @@ def _theta_rms_disc(chi_c2, chi_a2, B, cut=THETA_CUT, n=_DISC_N):
     W = F[:, None] * F[None, :]
     num = np.sum(((TX ** 2 + TY ** 2) * W)[inside])
     den = np.sum(W[inside])
+    if den == 0:
+        return 0.0
     return math.sqrt(num / den)
 
 
