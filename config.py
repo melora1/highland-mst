@@ -108,19 +108,20 @@ RASTER_HALF = 7.5     # cm; node centers span [-7.5, +7.5] in x and y
 # and Sec. 2.3's central mechanism stands or falls on it. Quantified in the
 # README.
 #
-# NOTE (do not "fix" this default without reading tests.py first): an
-# earlier patch attempt flipped this default to "per_setting" on the theory
-# that "none" is unsafe as a silent default. That patch was WRONG and has
-# been reverted. tests.py::test_momentum_position_correlation_exists
-# explicitly validates THIS default and its own docstring says failing means
-# "the configuration cannot support the paper's central claim" -- i.e. under
-# 'per_setting', the repo's own pre-flight gate fails, by design, because the
-# spatially-structured-artifact mechanism Sec. 2.3/4.4 claims has no basis
-# once the beamline is honestly re-steered. See README.md's new section
-# "IMPORTANT: tests.py validates the wrong configuration for
-# results_pipeline.py" for why this default and results_pipeline.py's forced
-# 'per_setting' are now DELIBERATELY inconsistent, and why that inconsistency
-# itself is the actual bug that needs a human decision, not a code patch.
+# NOTE: keep the file default as "none".  It is the diagnostic/legacy
+# configuration used to demonstrate the large momentum-position correlation
+# produced by an uncompensated dipole.  The production diagnostic pipeline
+# deliberately overrides this to "per_setting" BEFORE importing simulate.py,
+# matching a beamline re-steered for each nominal momentum setting.
+#
+# tests.py validates BOTH configurations separately:
+#   * uncompensated/"none" must show the large setting-dependent displacement;
+#   * production/"per_setting" must keep the median setting-to-setting PoCA-x
+#     spread below one voxel.
+#
+# This split is intentional.  Do not infer production behavior from this file
+# default alone; results_pipeline.py is the source of truth for production
+# steering.
 STEER_COMPENSATION = "none"
 
 # ---------------------------------------------------------------- selection

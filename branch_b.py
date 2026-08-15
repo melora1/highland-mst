@@ -185,6 +185,17 @@ def edge_response(img, counts=None):
 
     sig = abs(popt[3])
     err = float(np.sqrt(abs(pcov[3, 3])))
+    sigma_lo = float(bounds[0][3])
+    sigma_hi = float(bounds[1][3])
+
+    # A solution pinned to a parameter bound is unresolved by this fit and
+    # must not be reported as a physical PSF measurement.  Likewise, a sigma
+    # uncertainty as large as the estimate itself is not a stable result.
+    if sig <= 1.02 * sigma_lo or sig >= 0.98 * sigma_hi:
+        return dict(fail, edge_fit_status="sigma at fit bound")
+    if not np.isfinite(err) or err >= sig:
+        return dict(fail, edge_fit_status="unstable sigma covariance")
+
     return dict(sigma_PSF=sig, sigma_PSF_err=err, edge_10_90=2.56 * sig,
                 edge_fit_status="ok")
 

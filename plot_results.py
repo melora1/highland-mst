@@ -7,6 +7,8 @@ Usage:
 
 Reads from:  {outdir}/images.npz, metrics.csv, artifact.csv, speckle.csv
 Writes to:   {outdir}/figs/  (.pdf for LaTeX, .png for preview)
+Figure filenames include the run-directory parameter tag, e.g.
+    slices_all_seed0_n500000.pdf
 
 Journal conventions:
   * No in-figure titles. Captions printed to stdout, ready to paste.
@@ -58,9 +60,25 @@ PANEL_LABELS = "abcdefghij"
 
 # ---------------------------------------------------------------- helpers
 
+def _run_tag_from_figdir(figdir):
+    """Return a filesystem-safe run tag from the parent run directory.
+
+    For the standard production layout
+        out/seed0_n500000/figs
+    this returns ``seed0_n500000`` so every figure carries the simulation
+    parameters in its filename.
+    """
+    run_dir = os.path.basename(os.path.normpath(os.path.dirname(figdir)))
+    safe = "".join(c if (c.isalnum() or c in "-_") else "_"
+                   for c in run_dir)
+    return safe.strip("_") or "run"
+
+
 def _save(fig, figdir, name):
-    fig.savefig(os.path.join(figdir, f"{name}.pdf"))
-    fig.savefig(os.path.join(figdir, f"{name}.png"))
+    tag = _run_tag_from_figdir(figdir)
+    stem = f"{name}_{tag}"
+    fig.savefig(os.path.join(figdir, f"{stem}.pdf"))
+    fig.savefig(os.path.join(figdir, f"{stem}.png"))
     plt.close(fig)
 
 
@@ -228,7 +246,7 @@ def plot_artifact_summary(artifact, figdir):
     ax = axes[1]
     vals_b  = [artifact["orth_fraction"] * 100,
                artifact["reduction"]     * 100]
-    labels_b = ["orthogonal\nfraction",
+    labels_b = ["non-rescaling\northogonal fraction",
                 "per-momentum\nreduction"]
     bars = ax.bar(labels_b, vals_b,
                   color=["#D55E00", "#009E73"], linewidth=0)
@@ -241,9 +259,10 @@ def plot_artifact_summary(artifact, figdir):
     print("\n[artifact_summary] suggested caption:\n"
           "  (a)~RMS magnitude of the artifact map before and after the "
           "per-momentum correction. "
-          "(b)~Fraction of the artifact orthogonal to a uniform rescale "
-          "(i.e., not explained by the $I_{\\mathrm{const}}$ null control), "
-          "and the RMS reduction achieved by the per-momentum correction alone.")
+          "(b)~Fraction of $I_{\\mathrm{nom}}-I_Q$ orthogonal to a uniform "
+          "rescaling of $I_Q$ (a descriptive non-rescaling component, not a "
+          "standalone causal measure of physical structure), and the RMS "
+          "reduction achieved by the per-momentum correction alone.")
 
 
 def plot_speckle(speckle, figdir):
@@ -321,12 +340,23 @@ def plot_psf_profile(imgs, figdir, image_name="I_nom",
     ax.plot(rc, val, "o", ms=3.5, color=color, label="radial profile")
     sigma_txt = ""
     try:
-        popt, _ = curve_fit(_erf_edge, rc, val, p0=p0,
-                            bounds=bounds, maxfev=20000)
-        rr = np.linspace(rc.min(), rc.max(), 200)
-        ax.plot(rr, _erf_edge(rr, *popt), "-", color="black",
-                linewidth=1.2, label="erf fit")
-        sigma_txt = f"$\\sigma={abs(popt[3]):.3f}$~cm"
+        popt, pcov = curve_fit(_erf_edge, rc, val, p0=p0,
+                               bounds=bounds, maxfev=20000)
+        sig = abs(float(popt[3]))
+        err = float(np.sqrt(abs(pcov[3, 3])))
+        sigma_lo = float(bounds[0][3])
+        sigma_hi = float(bounds[1][3])
+        bound_limited = sig <= 1.02 * sigma_lo or sig >= 0.98 * sigma_hi
+        unstable = (not np.isfinite(err)) or err >= sig
+        if bound_limited:
+            sigma_txt = "fit unresolved (sigma at fit bound)"
+        elif unstable:
+            sigma_txt = "fit unresolved (unstable sigma covariance)"
+        else:
+            rr = np.linspace(rc.min(), rc.max(), 200)
+            ax.plot(rr, _erf_edge(rr, *popt), "-", color="black",
+                    linewidth=1.2, label="erf fit")
+            sigma_txt = f"$\\sigma={sig:.3f}\\pm{err:.3f}$~cm"
     except Exception as exc:
         sigma_txt = f"fit failed ({type(exc).__name__})"
     ax.axvline(PB_ROI_R, color="gray", linestyle="--", linewidth=0.8)
@@ -352,7 +382,7 @@ def main():
     ap.add_argument("--outdir", default=None,
                     help="Run directory produced by results_pipeline.py, "
                          "e.g. out/seed0_n500000. "
-                         "Figures are written to {outdir}/figs/.")
+                         "Figures are written to {outdir}/figs/ and filenames include the run tag.")
     a = ap.parse_args()
 
     if a.outdir is None:
@@ -391,7 +421,9 @@ def main():
     plot_psf_profile(imgs, figdir, "I_nom")
     plot_psf_profile(imgs, figdir, "I_Q")
 
-    print(f"\nfigures written to {figdir}/ (.pdf for LaTeX, .png for preview)")
+    tag = _run_tag_from_figdir(figdir)
+    print(f"\nfigures written to {figdir}/ with suffix _{tag} "
+          "(.pdf for LaTeX, .png for preview)")
 
 
 if __name__ == "__main__":

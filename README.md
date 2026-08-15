@@ -22,15 +22,15 @@ and propagates the effect through a controlled beamline simulation.
 | `config.py` | All constants: materials, geometry, spectrometer, beam profile, ROIs. Single source of truth — nothing hard-codes numbers elsewhere. |
 | `kinematics.py` | β, Highland θ₀ (Eq. 1), θ_space = √2 θ₀. |
 | `geometry.py` | Analytic ray tracer. `trace_true` (Al+Cu+Pb) vs. `trace_ref` (Al+Cu, Pb→Cu) — do not swap them; see the module docstring. |
-| `moliere.py` | χ_c, χ_a, B (Appendix A), projected Molière f⁽ⁿ⁾ computed from the defining generating integral (not transcribed from Bethe's Table II — see the CONVENTION block in the module), cached CDF sampler. |
+| `moliere.py` | χ_c, χ_a, B (Appendix A), the **radial** Hankel-generated Molière Φ⁽ⁿ⁾ used for quantitative sampling/calibration, plus projected f_p⁽ⁿ⁾ retained only as an appendix diagnostic. The production sampler draws the radial magnitude and a uniform azimuth rather than independent projected marginals. |
 | `simulate.py` | Event pipeline: beam → dipole momentum tag → Molière scatter at the target → downstream tracking → PoCA. Writes one flat table per momentum setting. |
 
-### Calibration and results (fills manuscript Sec. 5)
+### Calibration and detector-level diagnostics
 
 | File | Role |
 |---|---|
-| `eps_quadrature.py` | **Deterministic** εM(p, path) by 2D acceptance quadrature on this repo's own `moliere.py` — the manuscript's Sec. 2.3 quantity. Reproduces the manuscript's axial εM table (+5.1/+10.8/+14.2/+17.1 % at 1/2/3.5/6 GeV/c) to rounding; run `python3 eps_quadrature.py` to check. This is the calibration source for the imaging weight — **not** `branch_a.py`'s Monte Carlo fit, which answers a different question (reconstruction noise/resolution/truncation decomposition). |
-| `results_pipeline.py` | Builds the four manuscript images (I_nom, I_p, I_ideal, I_const — Sec. 4.4), runs SNR/CNR/DP + edge response, and computes the artifact map / null-control decomposition. **This is what fills the previously-empty Results §5.2–5.4.** |
+| `eps_quadrature.py` | **Deterministic radial** εM(p, path), retained fraction, M₂, M₄, and model/path-specific acceptance optimization from the non-factorized Molière density. At the fixed 200 mrad axial reference path, the corrected radial diagnostics are approximately +4.07/+9.77/+13.15/+16.15 % at 1/2/3.5/6 GeV/c. |
+| `results_pipeline.py` | Detector-level diagnostic pipeline. Builds I_nom, I_p, I_Q, I_ideal, I_const, and adaptive-I_Q images, runs SNR/CNR/edge/speckle diagnostics, and computes the I_nom−I_Q non-rescaling decomposition. The current manuscript is theory-only; these simulation outputs are diagnostics, not manuscript results by default. |
 
 ### Original validation suite (still useful; not on the path that produces the paper's numbers anymore)
 
@@ -39,7 +39,7 @@ and propagates the effect through a controlled beamline simulation.
 | `branch_a.py` | Residual decomposition (noise / momentum-resolution / truncation / εM) via Monte Carlo + bootstrap. Useful as a sampler-closure and reconstruction-noise diagnostic; its εM fit is no longer what calibrates the imaging weight (see `eps_quadrature.py`). |
 | `branch_b.py` | Original imaging driver (nominal/biased/corrected images). Superseded by `results_pipeline.py` for the paper's numbers, but its ROI/metrics/edge-response helpers (`roi_masks`, `metrics`, `edge_response`, `voxelise`) are imported directly by `results_pipeline.py` — keep it in the repo. |
 | `run_all.py` | Original end-to-end driver (tests → Gaussian control → Molière run → Branch A → Branch B). Runs under `config.py`'s defaults; optional, diagnostic only. |
-| `tests.py` | Pre-flight validation. **Run this before any production run.** 17 checks including geometry invariants, the Molière single-scatter tail limit, and the beam/steering assumptions the imaging claim depends on. |
+| `tests.py` | Pre-flight validation. **Run this before any production run.** Includes radial normalization/tail/isotropy/sampler-closure tests and separate checks for the uncompensated diagnostic steering and the per-setting production steering. |
 
 ### Independent checks (literature + closed-form arithmetic, not simulation)
 
@@ -93,42 +93,25 @@ config/εM source, don't mix its numbers into the paper's Results section):
 python3 run_all.py
 ```
 
-## IMPORTANT: `tests.py` validates a different configuration than `results_pipeline.py` uses
+## IMPORTANT: steering is intentionally tested in two configurations
 
-This was found while fixing the `STEER_COMPENSATION` documentation bug
-below, and is more important than that bug itself.
+`config.py` deliberately keeps `STEER_COMPENSATION='none'` as the
+diagnostic/legacy file default.  In that uncompensated configuration the
+dipole produces a large setting-dependent transverse displacement, and
+`test_uncompensated_configuration_has_momentum_position_correlation` verifies
+that the diagnostic mechanism is actually present.
 
-`results_pipeline.py` now correctly forces `STEER_COMPENSATION='per_setting'`
-(see that file's header). `tests.py` — which the "Run order" below says to
-run first, and which must be all-PASS — validates `config.py`'s **file
-default**, which is `'none'`. These are two different configurations. A
-green `tests.py` run therefore certifies nothing about the configuration
-`results_pipeline.py` actually uses.
+`results_pipeline.py` is different by design: it forces
+`STEER_COMPENSATION='per_setting'` **before importing `simulate.py`**, matching
+a beamline re-steered for each nominal momentum setting.
+`test_production_configuration_has_no_gross_setting_steering` reproduces that
+import-time configuration and verifies that the median setting-to-setting
+PoCA-x spread remains below one voxel.  The pipeline also prints the same
+production check before an expensive run.
 
-This isn't cosmetic. `tests.py::test_momentum_position_correlation_exists`
-exists specifically to check whether the momentum-position correlation that
-Sec. 2.3/4.4's spatially-structured artifact requires is present under the
-chosen configuration, and its own docstring says explicitly: *"Failing here
-does not mean the code is wrong. It means the configuration cannot support
-the paper's central claim, and one of the two has to change."* Run that test
-under `STEER_COMPENSATION='per_setting'` (the config `results_pipeline.py`
-actually uses) and it **fails**: median-PoCA-x spread is ~0.03–0.04 cm
-against a 0.6 cm voxel — no detectable momentum-position correlation. Under
-`'none'` (what `tests.py` currently checks) it passes trivially, because
-`'none'` manufactures the correlation via the uncorrected dipole kick.
-
-`results_pipeline.py` now runs this same check itself, under its own actual
-config, before the expensive simulation, and prints a loud (non-fatal)
-warning if the spread is sub-voxel — so this can no longer happen silently.
-**Do not fix this by editing `config.py`'s default** — see the note in
-`config.py` next to `STEER_COMPENSATION` explaining why that was tried and
-reverted (it just makes `tests.py`'s step-0 gate fail instead, moving the
-problem rather than resolving it). The actual open question — whether the
-paper's central spatially-structured-artifact claim has any physical
-mechanism once the beamline is honestly re-steered — is a physics/paper
-question, not a code bug, and needs a human decision: either the manuscript's
-framing needs to change, or a different source of momentum-position
-correlation than dipole mis-steering needs to be identified and argued for.
+A green test suite therefore validates both intended regimes rather than
+conflating them.  Do not change the file default merely to make it match the
+production pipeline; the split is deliberate and documented.
 
 ## Two configuration decisions that matter — read before changing `config.py`
 
@@ -144,49 +127,36 @@ equal exposure per node — how tagged-beam facilities actually cover an
 extended target. `'uniform'` (flood illumination) and `'pencil'` remain
 available if you want to compare.
 
-**`STEER_COMPENSATION`** — `config.py` default is now `'per_setting'`;
-`results_pipeline.py` also forces this explicitly at runtime (patches
-`config` *before* importing `simulate`, so it never touches the file on
-disk) regardless of the default, as belt-and-suspenders for any other entry
-point. This matters because the uncorrected dipole kick (`'none'`)
-manufactures a large momentum-position correlation that would trivially
-produce the spatially-structured artifact Sec. 2.3/4.4 claims —
-`'per_setting'` (a beam re-steered per momentum setting, as a real tagged
-beamline is operated) is what the manuscript's Sec. 3.3 actually specifies,
-and is the harder, honest test of whether that claim survives. The repo's
-own `test_momentum_position_correlation_exists` documents the difference
-(4.90 cm spread with `'none'` vs. 0.04 cm with `'per_setting'`, against a
-0.6 cm voxel).
+**`STEER_COMPENSATION`** — `config.py` deliberately defaults to `'none'`
+for the uncompensated diagnostic configuration.  `results_pipeline.py`
+explicitly forces `'per_setting'` at runtime by patching `config` *before*
+importing `simulate`.  This matters because `'none'` manufactures a large
+setting-dependent momentum-position correlation through the uncompensated
+dipole kick, while `'per_setting'` removes that gross displacement.  The two
+steering tests described above validate both behaviors separately.
 
-**Bug fixed:** earlier versions of `results_pipeline.py` documented this
-override in the comment above but never implemented it — the script silently
-ran under `config.py`'s then-default of `'none'` every time. Both the
-runtime patch and the config default are now fixed (see `results_pipeline.py`
-header and `config.py`). **Any results produced by `results_pipeline.py`
-before this fix — including the numbers in "Reading the results" below —
-were computed under the unintended `'none'` pathway and must be re-run.** A
-spot-check at reduced statistics (n=20,000/setting) after the fix showed the
-decisive orthogonal-fraction number moving from 0.210 (`'none'`, matching the
-pre-fix behavior) to 0.159 (`'per_setting'`, the intended/honest test) — a
-~24% shift, well outside noise at that n. This is not a subtle effect; treat
-every previously-reported Sec. 5.4 number as provisional until rerun.
+Earlier versions of `results_pipeline.py` documented the runtime override but
+did not actually apply it.  Results generated by those versions under the
+unintended `'none'` pathway must not be mixed with the corrected production
+results.
 
 ## Reading the results
 
-`results_pipeline.py`'s printed report has one number that actually decides
-the paper's central imaging claim: **`orthogonal (genuine structure) fraction`**
-in the artifact decomposition. It's the RMS of the component of the
-I_nom − I_ideal artifact map that is *not* explainable by a uniform rescale
-(the I_const null control) — i.e. genuine momentum/path-length-driven spatial
-structure surviving a re-steered beamline.
+`results_pipeline.py` reports a **non-rescaling orthogonal fraction** in
+the detector-level `I_nom - I_Q` decomposition.  It is the RMS fraction of
+that difference orthogonal to a uniform rescaling of `I_Q`.  This is a useful
+descriptive statistic, but it is not by itself a causal measurement of
+"genuine physical structure"; residual momentum/path/reconstruction effects
+and finite-statistics structure can also contribute.
 
-**Stale pending re-run:** at n=50,000/setting this previously measured
-**0.249** with a 90.4% per-momentum correction reduction. That run predates
-the `STEER_COMPENSATION` fix above (see "Two configuration decisions") and
-was almost certainly computed under the unintended `'none'` pathway rather
-than the honest `'per_setting'` test — do not cite 0.249/90.4% until this is
-rerun with the fixed pipeline. Run the full convergence scan (step 4 above)
-before treating any new number as final.
+A five-seed convergence run at 500,000 events per momentum setting (2 million
+events per seed) under the corrected radial model and production
+`'per_setting'` steering gave a stable non-rescaling orthogonal fraction of
+about 0.213 with a seed-to-seed standard deviation of about 0.007, and a
+per-momentum correction reduction of about 0.854 with seed-to-seed standard
+deviation below 0.001. These are detector-level constant-momentum simulation
+diagnostics, not full systematic uncertainties and not causal proof that the
+orthogonal component is physical structure.
 
 ## Verification tags used in the manuscript/bib comments
 
@@ -199,26 +169,19 @@ imaging results this repo produces are no longer in this category once run).
 
 ## Status
 
-- Theory and quadrature (εM, √ln and quadratic divergence laws, the
-  acceptance-matched estimator, k_opt, η_max): complete, independently
-  reproduced by a from-scratch implementation, matches the manuscript to
-  rounding.
-- Beamline + imaging pipeline: complete, validated (all 17 `tests.py` checks
-  pass), and produces real (non-placeholder) numbers as of the raster-beam
-  fix. Convergence with event count is still being characterized — see
-  "Reading the results" above.
+- Theory and radial quadrature (εM, logarithmic second-moment and quadratic
+  fourth-moment scaling, acceptance-matched estimator, and path-specific
+  acceptance optimization): implemented and internally validated. The projected
+  factorized construction remains diagnostic only.
+- Beamline + detector-level diagnostic pipeline: all current `tests.py`
+  checks pass. Five independent 2M-event seeds show stable fixed-cut artifact
+  decomposition metrics; see "Reading the results" above.
 - Geant4 cross-check (Sec. 3): harness ready (`geant4_compare.py`); actual
   Geant4 runs are external and not yet done.
-- Manuscript: a theory-only version exists with full Discussion and
-  Conclusions sections (simulation-dependent claims and run-specific numbers
-  deliberately stripped, so this version does not block on results-pipeline
-  convergence). Still outstanding for the full version: (1) a numeric
-  Results section (Sec. 5.2-5.4) — now blocked on re-running
-  `results_pipeline.py` post-`STEER_COMPENSATION`-fix, since the previous
-  numbers are stale (see "Reading the results"); (2) a Sec. 3 Geant4
-  cross-check writeup once those runs are done; (3) an explicit statement of
-  the Cu/Pb ROI mask-difference convention (see `branch_b.py`'s inline note
-  on the r=3.75 cm Cu ROI overlapping the Pb cylinder) — the paper's ROI
-  definition is currently ambiguous on this point and `branch_b.py`'s
-  behavior (excluding Pb-ROI voxels from the Cu ROI by mask difference)
-  should be stated in the text, not just in code comments.
+- Manuscript: the current theory-only version deliberately excludes
+  simulation-dependent image claims. Publication-grade detector/transport
+  claims still require the stated remaining systematics: momentum-loss p(X)
+  treatment where appreciable, a resolution-conditioned detector calibration
+  for w_Q, and independent transport validation (e.g. Geant4). The Cu/Pb ROI
+  mask-difference convention should also be stated explicitly in any future
+  image-level writeup.
