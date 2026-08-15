@@ -1,25 +1,14 @@
 #!/usr/bin/env python3
-"""
-geant4_compare.py  --  cross-check the Moliere quadrature (moliere.py/
-quadrature.py) against an independent Geant4 transport simulation, as in
-manuscript Sec. 3.
+"""Compare a constant-momentum Geant4 control sample with radial quadrature.
 
-Geant4 itself is a C++/macro toolkit and is NOT invoked from Python; you run it
-separately (see the macro template + physics notes at the bottom) and dump, per
-configuration, the per-event SPACE-angle scatter theta_space = sqrt(thx^2+thy^2)
-in radians to a text/CSV file. This script does the ANALYSIS side:
+The corrected Python reference is the manuscript's non-factorized radial
+Moliere n<=2 calculation.  Direct comparison is valid here only for a Geant4
+control in which momentum is held fixed through the slab (energy loss disabled).
+An energy-loss-enabled transport run requires the separate p(X)-aware treatment
+described in the manuscript and is intentionally rejected by this script.
 
-  input file  : one float per line = theta_space (rad) for each surviving muon,
-                OR a CSV with a 'theta_space' column.
-  it computes : in-acceptance RMS within |theta| < theta_cut (200 mrad),
-  compares to : quadrature.theta_rms for the SAME (material, p, x/X0, cut),
-  and reports : Geant4 vs quadrature RMS, the implied eps_M, and whether the
-                difference sits inside the published Urban/Wentzel-VI model
-                spread (Makarova 2017: ~4% in Pb) plus the ~1% planar systematic.
-
-Usage:
-  python3 geant4_compare.py --file cu_p1.0_urban.txt \
-        --material Cu --thickness_cm 15 --p 1.0 --model urban
+Input: one space-angle magnitude per line, or CSV column ``theta_space``.
+Output: accepted RMS, radial-quadrature RMS, Highland core RMS, and discrepancy.
 """
 import argparse, math, sys
 import numpy as np
@@ -29,7 +18,6 @@ from eps_quadrature import theta_RMS_at_cut
 
 # published model spread (Makarova 2017, thickness-averaged), fractional
 MODEL_SPREAD = {"urban": 0.08, "wentzel": 0.04}   # low-Z worst case; Pb ~4%
-PLANAR_SYS = 0.011                                 # ~1% independence approximation
 
 def load_angles(path):
     try:
@@ -60,7 +48,22 @@ def main(argv=None):
     ap.add_argument("--p", type=float, required=True, help="momentum GeV/c")
     ap.add_argument("--model", default="urban", choices=["urban", "wentzel"])
     ap.add_argument("--theta_cut", type=float, default=0.200)
+    ap.add_argument(
+        "--constant-momentum-control", action="store_true",
+        help=("Assert that the supplied Geant4 sample was generated with "
+              "energy loss disabled (or otherwise fixed momentum). The "
+              "Python radial quadrature is the manuscript's constant-p "
+              "limit and must not be compared directly to an energy-loss "
+              "sample as though it implemented p(X)."))
     a = ap.parse_args(argv)
+
+    if not a.constant_momentum_control:
+        raise SystemExit(
+            "Direct Geant4/quadrature comparison requires "
+            "--constant-momentum-control. The current Python calculation is "
+            "the manuscript's constant-p limit; an energy-loss-enabled "
+            "Geant4 run requires a p(X)-aware transport calibration, not the "
+            "incident momentum substituted throughout the slab.")
 
     angles = load_angles(a.file)
     g4_rms, n_keep, n_tot = in_acceptance_rms(angles, a.theta_cut)
@@ -80,7 +83,7 @@ def main(argv=None):
     tspace = float(theta_space_highland(a.p, xX0))
 
     frac_diff = (g4_rms - q_rms)/q_rms
-    tol = MODEL_SPREAD[a.model] + PLANAR_SYS
+    tol = MODEL_SPREAD[a.model]
     verdict = "PASS" if abs(frac_diff) <= tol else "OUTSIDE BUDGET"
 
     print(f"material={a.material}  p={a.p} GeV/c  x/X0={xX0:.3f}  "
@@ -105,8 +108,9 @@ if __name__ == "__main__":
 #                explicitly per run:  Urban  vs  WentzelVI  (manuscript Sec. 3).
 # Geometry:      single slab of {Cu,Pb} with thickness matching --thickness_cm;
 #                monochromatic mu- beam at {1.0,2.0,3.5,6.0} GeV/c, normal
-#                incidence; energy loss ENABLED but incident p used in compare
-#                (a no-eloss control run isolates pure scattering at low p).
+#                incidence. For THIS script's direct quadrature comparison,
+#                energy loss must be DISABLED and --constant-momentum-control
+#                supplied. Energy-loss-enabled runs require a p(X)-aware model.
 # Scoring:       at the downstream face record the exit direction; compute
 #                theta_space = angle to the incident axis; write one value/line.
 #

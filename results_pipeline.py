@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-results_pipeline.py  --  fills manuscript Sec. 5.2-5.4.
+results_pipeline.py -- detector-level diagnostic pipeline.
+
+The current manuscript is theory-only.  This script therefore does NOT claim
+to fill manuscript Results sections.  I_Q below is a reconstructed plug-in
+weight; only I_ideal uses true p, true reference path, and true scatter angle.
+A fully resolution-conditioned detector calibration is still a separate task.
 
 Each run writes to its own directory:
     out/seed{seed}_n{n}/          <-- all .npy, .csv, .npz outputs
@@ -10,12 +15,12 @@ Run:
     python3 results_pipeline.py --n 500000 --seed 0
     python3 plot_results.py --outdir out/seed0_n500000
 
-Five images (Sec. 5.4), all denominators evaluated on the REFERENCE geometry:
+Five diagnostic images, with scattering denominators evaluated on the REFERENCE geometry:
     I_nom   : w = (dth / theta_space(p, x/X0|ref))^2
     I_p     : w = (dth / ((1+eps_M_hat(p)) * theta_space))^2
-    I_ideal : w = w_Q  [same array; both names refer to same image]
+    I_ideal : true-parameter diagnostic using dth_true, p_true and true ref path
     I_const : w = (dth / ((1+eps_bar) * theta_space))^2  [null control]
-    I_Q     : w = (dth / theta_RMS(theta_cut, p, x/X0|ref))^2
+    I_Q     : reconstructed plug-in w=(dth_reco/theta_RMS(p_meas,path_reco))^2
 """
 
 import os
@@ -24,11 +29,64 @@ import argparse
 import numpy as np
 import pandas as pd
 
+# --------------------------------------------------------------------------
+# STEER_COMPENSATION must be 'per_setting' for this pipeline. config.py's
+# on-disk default is 'none', which (per config.py's own comments and
+# tests.py::test_momentum_position_correlation_exists) manufactures a large
+# momentum-position correlation on its own.  'per_setting' (beamline
+# re-steered per momentum setting) is the controlled diagnostic configuration
+# used here so an imposed setting-dependent beam displacement is not confused
+# with scattering-model structure.
+#
+# This must be set on the `config` module BEFORE `simulate` is imported,
+# since simulate.py reads STEER_COMPENSATION at import time via
+# `from config import ... STEER_COMPENSATION`. Previously this patch was
+# documented in README.md ("results_pipeline.py overrides this to
+# 'per_setting' at runtime... it patches config before importing simulate")
+# but was never actually implemented -- every run of this script silently
+# used the 'none' default instead. Any numbers previously produced by this
+# script (including the 0.249 orthogonal-fraction / 90.4% reduction figures
+# quoted in README.md's "Reading the results" section) were almost
+# certainly generated under the unintended 'none' pathway and should be
+# re-run and re-validated now that this is fixed.
+import config as _config
+if _config.STEER_COMPENSATION != "per_setting":
+    print(f"[results_pipeline] config.STEER_COMPENSATION was "
+          f"{_config.STEER_COMPENSATION!r}; forcing 'per_setting' for this "
+          f"run (see comment at top of results_pipeline.py).")
+    _config.STEER_COMPENSATION = "per_setting"
+
 import simulate
+
+
+def _preflight_correlation_check():
+    """Reproduces tests.py::test_momentum_position_correlation_exists but
+    under THIS run's actual config (STEER_COMPENSATION='per_setting'), not
+    config.py's file default. This matters because tests.py's own gate
+    validates the file default, which the "Run order" in README.md says to
+    run BEFORE this script -- but that gives no information about the
+    configuration this script actually uses, since results_pipeline.py
+    forces a different value at import time (see above). A green tests.py
+    run therefore does not certify that results_pipeline.py's output has a
+    physical mechanism behind it; only this check does. Prints, does not
+    raise: per tests.py's own docstring, a small spread here does not mean
+    the code is broken, it means the paper's central claim may have no
+    mechanism under the honest configuration -- something to see, not hide.
+    """
+    from config import MOMENTA, VOX_SIZE
+    med = [np.median(simulate.simulate_setting(p, n=15000, mode="gauss").poca_x)
+           for p in MOMENTA]
+    spread = max(med) - min(med)
+    ok = spread > VOX_SIZE
+    print(f"[results_pipeline] momentum-position correlation check under "
+          f"STEER_COMPENSATION='per_setting': median-PoCA-x spread = "
+          f"{spread:.3f} cm (voxel = {VOX_SIZE:.2f} cm) -> "
+          f"{'OK, mechanism present' if ok else 'BELOW ONE VOXEL -- the artifact this run measures may be pure noise, not the spatially-structured signal Sec. 2.3/4.4 claims. See tests.py::test_momentum_position_correlation_exists.'}")
+    return spread, ok
 import branch_b as bb
 from config import MOMENTA, OUT_DIR, MATERIALS
 from eps_quadrature import (theta_RMS, theta_RMS_at_cut, optimal_cut,
-                             eps_M_marginal, K_OPT)
+                             eps_M_marginal)
 from kinematics import theta_space_highland
 
 
@@ -38,7 +96,11 @@ def build_weights(df):
     """Compute all five per-event weights for the fixed 200 mrad cut.
 
     Returns (w_nom, w_p, w_ideal, w_const, w_Q, eps_bar, eps_ref_per_event).
-    w_ideal and w_Q are the same array.
+
+    w_Q is a reconstructed plug-in weight and is NOT asserted to have exact
+    unit expectation at detector level.  w_ideal is the true-parameter
+    constant-momentum diagnostic specified by the manuscript's mathematical
+    target.
     """
     dth      = df.dth_reco.values
     p        = df.p_meas.values
@@ -58,10 +120,27 @@ def build_weights(df):
         w_p = np.where(tspace_ref > 0,
                        (dth / ((1.0 + eps_p) * tspace_ref)) ** 2, 0.0)
 
+    # Reconstructed plug-in calibration.  The manuscript explicitly notes
+    # that exact detector-level E[w_Q]=1 additionally requires conditioning
+    # on the p/path resolution model; this plug-in does not claim that.
     trms_ref = theta_RMS(p, X_al_ref, X_cu_ref, X_pb_ref)
     with np.errstate(divide="ignore", invalid="ignore"):
         w_Q = np.where(trms_ref > 0, (dth / trms_ref) ** 2, 0.0)
-    w_ideal = w_Q
+
+    # Ideal true-parameter diagnostic in the manuscript's constant-p limit.
+    required = ("X_al_ref_true", "X_cu_ref_true", "X_pb_ref_true")
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise RuntimeError(
+            "event table predates radial/true-reference correction; regenerate "
+            f"with corrected simulate.py (missing {missing})")
+    trms_true = theta_RMS(df.p_true.values,
+                          df.X_al_ref_true.values,
+                          df.X_cu_ref_true.values,
+                          df.X_pb_ref_true.values)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        w_ideal = np.where(trms_true > 0,
+                           (df.dth_true.values / trms_true) ** 2, 0.0)
 
     with np.errstate(divide="ignore", invalid="ignore"):
         eps_ref_per_event = np.where(tspace_ref > 0,
@@ -122,10 +201,13 @@ def speckle_metric(img, counts, min_count=20, n_boot=500, rng=None):
         return dict(cv=np.nan, cv_err=np.nan, n_vox=int(vals.size))
     cv = (float(np.std(vals) / np.abs(np.mean(vals)))
           if np.mean(vals) != 0 else np.nan)
-    boot = [float(np.std(rng.choice(vals, size=vals.size, replace=True)) /
-                  np.abs(np.mean(rng.choice(vals, size=vals.size, replace=True))))
-            for _ in range(n_boot)]
-    cv_err = float(np.std(boot))
+    boot = np.empty(n_boot, dtype=float)
+    for i in range(n_boot):
+        sample = rng.choice(vals, size=vals.size, replace=True)
+        mean = np.mean(sample)
+        boot[i] = (np.std(sample, ddof=1) / np.abs(mean)
+                   if mean != 0 else np.nan)
+    cv_err = float(np.nanstd(boot, ddof=1))
     return dict(cv=cv, cv_err=cv_err, n_vox=int(vals.size))
 
 
@@ -145,6 +227,8 @@ def main():
     out = os.path.join(args.outdir, run_tag)
     os.makedirs(out, exist_ok=True)
 
+    _preflight_correlation_check()
+
     from moliere import MoliereSampler
     sampler = MoliereSampler(nmax=2)
 
@@ -163,8 +247,7 @@ def main():
     theta_cut_opt = optimal_cut(cat.p_meas.values,
                                 cat.X_al_ref.values,
                                 cat.X_cu_ref.values,
-                                cat.X_pb_ref.values,
-                                k_opt=K_OPT)
+                                cat.X_pb_ref.values)
     adaptive_pass = cat.dth_reco.values < theta_cut_opt
     df_adapt      = cat[adaptive_pass].reset_index(drop=True)
     cut_adapt     = theta_cut_opt[adaptive_pass]
@@ -176,7 +259,16 @@ def main():
     with np.errstate(divide="ignore", invalid="ignore"):
         w_Q_adapt = np.where(trms_adapt > 0,
                              (df_adapt.dth_reco.values / trms_adapt) ** 2, 0.0)
-    print(f"\nadaptive cut (k_opt={K_OPT}): "
+    # k_opt is intentionally model/path-specific; report its empirical range
+    # instead of presenting a universal manuscript constant.
+    xX0_adapt = (cat.X_al_ref.values / MATERIALS["Al"]["rho"] / MATERIALS["Al"]["X0"]
+                 + cat.X_cu_ref.values / MATERIALS["Cu"]["rho"] / MATERIALS["Cu"]["X0"])
+    theta0_adapt = theta_space_highland(cat.p_meas.values, xX0_adapt) / np.sqrt(2.0)
+    kvals = np.where(theta0_adapt > 0, theta_cut_opt / theta0_adapt, np.nan)
+    finite_k = kvals[np.isfinite(kvals) & (kvals > 0)]
+    print(f"\nadaptive radial cut: "
+          f"k median={np.median(finite_k):.3f}, "
+          f"range=[{np.min(finite_k):.3f},{np.max(finite_k):.3f}]; "
           f"{adaptive_pass.mean()*100:.1f}% of ALL generated events pass "
           f"(fixed 200 mrad cut passes {cat.pass_reco.mean()*100:.1f}%)")
 
@@ -201,7 +293,7 @@ def main():
     img_p     = _acc(w_p)
     img_ideal = _acc(w_ideal)
     img_const = _acc(w_const)
-    img_Q     = img_ideal
+    img_Q     = _acc(w_Q)
 
     # ------------------------------------------------------------------ adaptive image
     sample_a = np.stack([df_adapt.poca_x.values, df_adapt.poca_y.values,
@@ -266,11 +358,11 @@ def main():
     ])
 
     # ------------------------------------------------------------------ artifact
-    art = artifact_decomposition(img_nom, img_ideal, img_p, counts)
-    print(f"\nartifact RMS (I_nom - I_ideal)           = {art['artifact_rms']:.4g}")
+    art = artifact_decomposition(img_nom, img_Q, img_p, counts)
+    print(f"\nartifact RMS (I_nom - I_Q)           = {art['artifact_rms']:.4g}")
     print(f"orthogonal (genuine structure) fraction  = {art['orth_fraction']:.3f}"
           f"   <-- decisive number for Sec. 5.4")
-    print(f"residual RMS (I_p  - I_ideal)            = {art['residual_rms']:.4g}")
+    print(f"residual RMS (I_p  - I_Q)            = {art['residual_rms']:.4g}")
     print(f"per-momentum correction reduction        = {art['reduction']:.3f}")
 
     # ------------------------------------------------------------------ save

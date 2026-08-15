@@ -76,19 +76,19 @@ def test_solve_B():
 
 
 def test_pdf_normalisation():
-    """Before clipping, the truncated series must integrate to ~1, and the
-    clipped negative fraction must be << 1%. If not, n<=2 is failing."""
+    """Primary radial n<=2 series must remain normalized and non-negative
+    clipping must be negligible over representative paths."""
     for p in (1.0, 2.0, 3.5, 6.0):
-        for X in (27.0, 100.0, 170.0):     # g/cm^2, representative paths
+        for X in (27.0, 100.0, 170.0):
             chi_c2, chi_a2 = ml.combine_path(0.3 * X, 0.7 * X, 0.0, p)
             B = ml.solve_B(chi_c2, chi_a2)
-            _, clipped = ml.pdf_on_grid(chi_c2, B, nmax=2)
+            norm, clipped = ml.radial_total_mass(B, nmax=2)
+            assert abs(norm - 1.0) < 2e-4, (p, X, B, norm)
             assert clipped < 1e-2, (p, X, B, clipped)
 
-
 def test_gaussian_limit_matches_highland():
-    """n=0 term alone must reproduce a Gaussian whose RMS is within the
-    Lynch-Dahl 11% band of the Highland theta0."""
+    """The radial n=0 core has magnitude RMS s and projected RMS s/sqrt(2),
+    which must lie inside the Lynch-Dahl/Highland core-width band."""
     p = 2.0
     t_al, t_cu = 10.0, 15.0
     X_al = MATERIALS["Al"]["rho"] * t_al
@@ -97,13 +97,12 @@ def test_gaussian_limit_matches_highland():
 
     chi_c2, chi_a2 = ml.combine_path(X_al, X_cu, 0.0, p)
     B = ml.solve_B(chi_c2, chi_a2)
-    pdf, _ = ml.pdf_on_grid(chi_c2, B, nmax=0)
-    th = ml._THETA_GRID
-    rms = np.sqrt(_trapz(pdf * th ** 2, th))
+    scale = np.sqrt(chi_c2 * B)
+    _, M2, _ = ml.radial_moments(chi_c2, B, 10.0 * scale, nmax=0)
+    plane_rms = np.sqrt(M2 / 2.0)
 
     t0 = float(theta0_highland(p, xx0))
-    assert abs(rms / t0 - 1.0) < 0.11, (rms, t0, rms / t0)
-
+    assert abs(plane_rms / t0 - 1.0) < 0.11, (plane_rms, t0, plane_rms / t0)
 
 def test_projected_kernel_n0():
     """The generating integral must reproduce Appendix A's f^(0) exactly.
@@ -124,58 +123,96 @@ def test_correction_terms_integrate_to_zero():
 
 
 def test_tail_asymptote():
-    """PROJECTED tail power is theta^-3, not theta^-4.
-
-    theta^-4 is the SPACE-angle (Rutherford) power; projecting a 2-D
-    theta^-4 tail onto one axis gives theta^-3. Asserting -4 here was the
-    original bug.
-    """
-    p = 2.0
+    """PRIMARY radial areal density must approach the Rutherford Theta^-4 tail."""
+    p = 3.5
     chi_c2, chi_a2 = ml.combine_path(27.0, 134.0, 0.0, p)
     B = ml.solve_B(chi_c2, chi_a2)
     scale = np.sqrt(chi_c2 * B)
-    pdf, _ = ml.pdf_on_grid(chi_c2, B, nmax=2)
-    th = ml._THETA_GRID
-    eta = th / scale
-    m = (eta > 6.0) & (eta < ml._ETA_MAX) & (pdf > 0)
-    slope = np.polyfit(np.log(th[m]), np.log(pdf[m]), 1)[0]
-    assert -3.3 < slope < -2.7, slope
-
+    eta = np.geomspace(10.0, 25.0, 150)
+    th = eta * scale
+    P = ml.radial_density(th, chi_c2, B, nmax=2)
+    slope = np.polyfit(np.log(th), np.log(P), 1)[0]
+    assert -4.25 < slope < -3.75, slope
 
 def test_single_scatter_limit():
-    """ABSOLUTE tail normalisation, the strongest check in this module.
+    """Absolute radial Rutherford normalization:
 
-        f1 -> 1/(2 eta^3)  =>  F(theta) -> chi_c^2 / (2 theta^3)
+        P_M(Theta) -> chi_c^2 / (pi Theta^4).
 
-    B cancels: the tail is fixed by chi_c^2 alone, i.e. by the number of
-    scatterers. No free parameter. This catches a wrong f1 normalisation,
-    a wrong chi_c, and a wrong prefactor, none of which the slope test sees.
-
-    Checked at several (p, path) points, since B varies between them and a
-    surviving B dependence would show up as a spread.
+    This is the manuscript's defining two-dimensional tail.  It checks the
+    Hankel normalization, chi_c, and cancellation of B in the n=1 tail.
     """
-    cases = [(2.0, 27.0, 134.0), (1.0, 27.0, 134.0),
-             (6.0, 27.0, 134.0), (2.0, 27.0, 0.0), (3.5, 27.0, 60.0)]
-    tested = 0
+    cases = [(2.0, 27.0, 134.0), (3.5, 27.0, 134.0),
+             (6.0, 27.0, 134.0), (3.5, 27.0, 60.0)]
     for p, X_al, X_cu in cases:
         chi_c2, chi_a2 = ml.combine_path(X_al, X_cu, 0.0, p)
         B = ml.solve_B(chi_c2, chi_a2)
         scale = np.sqrt(chi_c2 * B)
-        eta_reach = ml.THETA_GRID_MAX / scale
-        if eta_reach < 12.0:
-            # theta grid does not extend far enough into the tail at this
-            # (p, path) to test the asymptote. Expected at low p, where the
-            # angular scale is large. Not a failure -- just not testable here.
-            continue
-        pdf, _ = ml.pdf_on_grid(chi_c2, B, nmax=2)
-        th = ml._THETA_GRID
-        eta = th / scale
-        m = (eta > 10.0) & (eta < min(ml._ETA_MAX, eta_reach)) & (pdf > 0)
-        assert m.sum() > 20, (p, X_cu, "window too narrow")
-        ratio = pdf[m] / (chi_c2 / (2.0 * th[m] ** 3))
+        eta = np.geomspace(12.0, 25.0, 100)
+        th = eta * scale
+        P = ml.radial_density(th, chi_c2, B, nmax=2)
+        ratio = P / (chi_c2 / (np.pi * th ** 4))
         assert abs(ratio.mean() - 1.0) < 0.05, (p, X_cu, B, ratio.mean())
-        tested += 1
-    assert tested >= 3, f"only {tested} cases reached the asymptotic tail"
+
+def test_radial_kernel_n0():
+    """The Hankel generating integral must give Phi0=2 exp(-eta^2)."""
+    for e in (0.0, 1.0, 2.0, 3.0, 4.0):
+        got = ml._phi_quad(0, e)
+        want = 2.0 * np.exp(-e * e)
+        assert abs(got - want) < 1e-10, (e, got, want)
+
+
+def test_radial_correction_terms_preserve_normalisation():
+    """Radial correction terms integrate to zero with measure eta d eta."""
+    e = np.linspace(0.0, ml._RADIAL_ETA_MAX, 50001)
+    I1 = _trapz(e * ml.phi1(e), e) + 1.0 / ml._RADIAL_ETA_MAX ** 2
+    I2 = _trapz(e * ml.phi2(e), e)
+    assert abs(I1) < 2e-4, I1
+    assert abs(I2) < 2e-4, I2
+
+
+def test_radial_sampler_matches_quadrature():
+    """Accepted-space-angle RMS from sampling must close on radial quadrature."""
+    p = 2.0
+    X_al = MATERIALS["Al"]["rho"] * 10.0
+    X_cu = MATERIALS["Cu"]["rho"] * 15.0
+    chi_c2, chi_a2 = ml.combine_path(X_al, X_cu, 0.0, p)
+    B = ml.solve_B(chi_c2, chi_a2)
+    Fc, M2, _ = ml.radial_moments(chi_c2, B, THETA_CUT)
+
+    n = 150000
+    rng = np.random.default_rng(123)
+    sampler = ml.MoliereSampler(nmax=2)
+    tx, ty = sampler.sample(np.full(n, p), np.full(n, X_al),
+                            np.full(n, X_cu), np.zeros(n), rng)
+    r = np.hypot(tx, ty)
+    keep = r < THETA_CUT
+    sample_fc = keep.mean()
+    sample_rms = np.sqrt(np.mean(r[keep] ** 2))
+    assert abs(sample_fc - Fc) < 0.003, (sample_fc, Fc)
+    assert abs(sample_rms / np.sqrt(M2) - 1.0) < 0.01, (sample_rms, np.sqrt(M2))
+
+
+def test_radial_sampler_is_azimuthally_isotropic():
+    """Hard scatters must not be concentrated along Cartesian axes."""
+    p = 3.5
+    X_al = MATERIALS["Al"]["rho"] * 10.0
+    X_cu = MATERIALS["Cu"]["rho"] * 15.0
+    chi_c2, chi_a2 = ml.combine_path(X_al, X_cu, 0.0, p)
+    B = ml.solve_B(chi_c2, chi_a2)
+    scale = np.sqrt(chi_c2 * B)
+
+    n = 250000
+    rng = np.random.default_rng(321)
+    sampler = ml.MoliereSampler(nmax=2)
+    tx, ty = sampler.sample(np.full(n, p), np.full(n, X_al),
+                            np.full(n, X_cu), np.zeros(n), rng)
+    r = np.hypot(tx, ty)
+    tail = r > 3.0 * scale
+    phi = np.arctan2(ty[tail], tx[tail])
+    assert tail.sum() > 1000
+    # cos(4 phi) is the leading four-fold anisotropy of an x/y-factorized tail.
+    assert abs(np.mean(np.cos(4.0 * phi))) < 0.04
 
 
 def test_sigma_delta_emergent():

@@ -1,208 +1,61 @@
 #!/usr/bin/env python3
+"""Acceptance-aware Moliere calibration from the manuscript's RADIAL density.
+
+The defining quantity is
+
+    eps_M(p, path, cut)
+        = theta_RMS(cut; p, path) / theta_space_highland(p, x/X0) - 1,
+
+where theta_RMS^2=M_2 is evaluated from the non-factorized two-dimensional
+Moliere density P_M(Theta).  The projected-marginal product
+F(theta_x)F(theta_y) is intentionally not used here.
+
+All functions in this module implement the manuscript's constant-momentum
+limit.  They do not silently substitute for the p(X) energy-loss-aware
+calibration required when momentum loss is appreciable.
 """
-eps_quadrature.py  --  deterministic Highland mismatch eps_M(p, path) by 2D
-acceptance quadrature, built on this repo's own moliere.py (chi_c2/chi_a2/B,
-projected f0+f1/B+f2/B^2). Manuscript Sec. 2.3: eps_M is a DETERMINISTIC
-functional of the Moliere distribution and the acceptance, evaluated by
-quadrature -- not fitted from a sampled Monte Carlo run (that is what
-branch_a.py's eps_M_fit does, and it answers a different question: it
-decomposes RECONSTRUCTION noise/resolution/truncation, none of which belong
-in the imaging weight of Eq. (2)/(7)).
 
-This module supplies the single number the weight actually needs:
-
-    eps_M(p, path) = theta_RMS(cut; p, path) / theta_space_highland(p, xX0) - 1
-
-with theta_RMS computed by 2D disc quadrature over the SAME acceptance the
-weight applies (theta_cut = THETA_CUT), using the path's own chi_c2, chi_a2, B
--- i.e. per-event material composition, not a momentum-only marginal.
-
-Reproduces the manuscript's axial eps_M table to rounding (see verify() at
-the bottom): +5.1/+10.8/+14.2/+17.1 % at 1.0/2.0/3.5/6.0 GeV/c.
-
-Cached per (path signature, momentum bucket) exactly like moliere.py's CDF
-cache, since only a handful of distinct (chi_c2, chi_a2) pairs occur in the
-simulated geometry.
-"""
 import math
 from functools import lru_cache
 
 import numpy as np
+from scipy.optimize import minimize_scalar
 
 import moliere as ml
-from config import MATERIALS, MAT_ORDER, P_CACHE_STEP, THETA_CUT, X_CACHE_STEP
+from config import MATERIALS, P_CACHE_STEP, THETA_CUT, X_CACHE_STEP
 from kinematics import theta_space_highland
 
-_DISC_N = 900          # grid points per axis for the 2D disc quadrature
+# Compatibility name only.  The corrected implementation has no universal
+# optimum; use optimal_k()/optimal_cut() for the chosen momentum and path.
+K_OPT = None
+_CUT_CACHE_STEP = 0.002  # rad, cache bucket for arbitrary per-event cuts
 
 
-def _theta_rms_disc(chi_c2, chi_a2, B, cut=THETA_CUT, n=_DISC_N):
-    """theta_RMS within the disc theta_x^2+theta_y^2<cut^2, using the SAME
-    projected density F(theta) = (1/(chi_c sqrt B)) sum f^(n)/B^n that
-    moliere.py's sampler CDF is built from (n<=2)."""
-    scale = math.sqrt(chi_c2 * B)
-    th = np.linspace(-cut, cut, n)
-    eta = th / scale
-    F = ml.f0(eta) + ml.f1(eta) / B + ml.f2(eta) / B ** 2
-    F = np.clip(F, 0.0, None)
-    TX, TY = np.meshgrid(th, th)
-    inside = (TX ** 2 + TY ** 2) < cut ** 2
-    W = F[:, None] * F[None, :]
-    num = np.sum(((TX ** 2 + TY ** 2) * W)[inside])
-    den = np.sum(W[inside])
-    if den == 0:
-        return 0.0
-    return math.sqrt(num / den)
+def _x_over_x0(X_al, X_cu, X_pb):
+    return (X_al / MATERIALS["Al"]["rho"] / MATERIALS["Al"]["X0"]
+            + X_cu / MATERIALS["Cu"]["rho"] / MATERIALS["Cu"]["X0"]
+            + X_pb / MATERIALS["Pb"]["rho"] / MATERIALS["Pb"]["X0"])
 
 
-@lru_cache(maxsize=8192)
-def _eps_M_bucketed(p_key, X_al_key, X_cu_key, X_pb_key):
-    # Zero-material guard: Moliere theory is undefined for zero areal density
-    # (chi_c2=0 -> log(0) in solve_B). eps_M=0 is correct: theta_RMS and
-    # theta_space are both zero, so the ratio is indeterminate but the weight
-    # w_Q = (dtheta/theta_RMS)^2 is masked to zero by the caller anyway.
-    if X_al_key == 0 and X_cu_key == 0 and X_pb_key == 0:
-        return 0.0
-    p = p_key * P_CACHE_STEP
-    X_al = X_al_key * X_CACHE_STEP
-    X_cu = X_cu_key * X_CACHE_STEP
-    X_pb = X_pb_key * X_CACHE_STEP
-    chi_c2, chi_a2 = ml.combine_path(X_al, X_cu, X_pb, p)
-    B = ml.solve_B(chi_c2, chi_a2)
-    trms = _theta_rms_disc(chi_c2, chi_a2, B)
-    xX0 = (X_al / MATERIALS["Al"]["rho"] / MATERIALS["Al"]["X0"]
-           + X_cu / MATERIALS["Cu"]["rho"] / MATERIALS["Cu"]["X0"]
-           + X_pb / MATERIALS["Pb"]["rho"] / MATERIALS["Pb"]["X0"])
-    tspace = float(theta_space_highland(p, xX0))
-    return trms / tspace - 1.0
+def _theta_rms_radial(chi_c2, B, cut=THETA_CUT):
+    """Conditional RMS from the manuscript's radial P_M(Theta)."""
+    _, M2, _ = ml.radial_moments(chi_c2, B, float(cut), nmax=2)
+    return math.sqrt(max(M2, 0.0))
 
 
-def eps_M(p, X_al, X_cu, X_pb):
-    """Vectorised: arrays in, eps_M array out.
-    Buckets to the same P_CACHE_STEP/X_CACHE_STEP grid moliere.py's sampler
-    uses, so the weight's eps_M and the sampler's distribution are evaluated
-    on matching supports."""
-    p = np.atleast_1d(np.asarray(p, float))
-    X_al = np.atleast_1d(np.asarray(X_al, float))
-    X_cu = np.atleast_1d(np.asarray(X_cu, float))
-    X_pb = np.atleast_1d(np.asarray(X_pb, float))
-    out = np.empty(p.size)
-    for i in range(p.size):
-        out[i] = _eps_M_bucketed(
-            round(p[i] / P_CACHE_STEP),
-            round(X_al[i] / X_CACHE_STEP),
-            round(X_cu[i] / X_CACHE_STEP),
-            round(X_pb[i] / X_CACHE_STEP),
-        )
-    return out
+def _theta_rms_disc(chi_c2, chi_a2, B, cut=THETA_CUT, n=None):
+    """Backward-compatible alias for old plotting code.
 
-
-def theta_space_corrected(p, X_al, X_cu, X_pb):
-    """(1+eps_M) * theta_space_highland -- Eq. (7)/(13), evaluated per event
-    at the SUPPLIED path (caller passes the reference path for I_p/I_nom, the
-    true path for I_ideal -- see results_pipeline.py)."""
-    xX0 = (X_al / MATERIALS["Al"]["rho"] / MATERIALS["Al"]["X0"]
-           + X_cu / MATERIALS["Cu"]["rho"] / MATERIALS["Cu"]["X0"]
-           + X_pb / MATERIALS["Pb"]["rho"] / MATERIALS["Pb"]["X0"])
-    ts = theta_space_highland(p, xX0)
-    return ts * (1.0 + eps_M(p, X_al, X_cu, X_pb))
-
-
-K_OPT = 1.825   # converged via minimize_scalar at ppt0=320; paper previously stated 1.84
-
-
-def _moments_disc_areaweighted(chi_c2, B, cut, n):
-    """2D disc quadrature WITH the grid-cell area element included, so mass
-    values are comparable across different (cut, n) pairs -- an earlier,
-    unweighted version of this integral gave nonsense eta(k) values (~36
-    instead of ~1.2) because omitting the area element only cancels within a
-    single call's own ratio, not across two calls at different resolutions."""
-    scale = math.sqrt(chi_c2 * B)
-    th = np.linspace(-cut, cut, n)
-    d = th[1] - th[0]
-    eta = th / scale
-    F = np.clip(ml.f0(eta) + ml.f1(eta) / B + ml.f2(eta) / B ** 2, 0, None) / scale
-    TX, TY = np.meshgrid(th, th)
-    R2 = TX ** 2 + TY ** 2
-    W = F[:, None] * F[None, :] * (d * d)
-    inside = R2 < cut ** 2
-    m2 = np.sum((R2 * W)[inside])
-    m4 = np.sum((R2 ** 2 * W)[inside])
-    mass = np.sum(W[inside])
-    return m2, m4, mass
-
-
-def efficiency(p, X_al, X_cu, X_pb, k, ppt0=40, k_ref=20.0):
-    """eta(k) = sqrt(f_keep) * <theta^2>/sigma(theta^2), Eq. (14), Sec. 5.2.
-    Grid resolution is held at a FIXED points-per-theta0 density (ppt0) for
-    both the truncated and reference integrals, so their mass values are on
-    a comparable footing."""
-    chi_c2, chi_a2 = combine_path_local(X_al, X_cu, X_pb, p)
-    B = ml.solve_B(chi_c2, chi_a2)
-    xX0 = (X_al / MATERIALS["Al"]["rho"] / MATERIALS["Al"]["X0"]
-          + X_cu / MATERIALS["Cu"]["rho"] / MATERIALS["Cu"]["X0"]
-          + X_pb / MATERIALS["Pb"]["rho"] / MATERIALS["Pb"]["X0"])
-    t0 = float(theta_space_highland(p, xX0)) / math.sqrt(2.0)
-    cut = k * t0
-    n_cut = max(int(ppt0 * (2 * cut / t0)), 200)
-    n_ref = max(int(ppt0 * (2 * k_ref * t0 / t0)), 200)
-    m2, m4, mass = _moments_disc_areaweighted(chi_c2, B, cut, n_cut)
-    _, _, mass_ref = _moments_disc_areaweighted(chi_c2, B, k_ref * t0, n_ref)
-    f_keep = mass / mass_ref
-    mean2, mean4 = m2 / mass, m4 / mass
-    var = max(mean4 - mean2 ** 2, 1e-30)
-    return math.sqrt(f_keep) * mean2 / math.sqrt(var)
-
-
-def combine_path_local(X_al, X_cu, X_pb, p):
-    return ml.combine_path(X_al, X_cu, X_pb, p)
-
-
-def verify_kopt():
-    """Reproduces Table (Sec. 5.2): k_opt~1.84-1.85, eta_max~1.197, universal
-    across momentum. Axial reference path (Al 10cm + Cu 15cm)."""
-    X_al, X_cu = MATERIALS["Al"]["rho"] * 10.0, MATERIALS["Cu"]["rho"] * 15.0
-    for p in (1.0, 2.0, 3.5, 6.0):
-        ks = np.linspace(1.3, 2.4, 23)
-        etas = [efficiency(p, X_al, X_cu, 0.0, k) for k in ks]
-        kbest = ks[int(np.argmax(etas))]
-        print(f"p={p}: k_opt~{kbest:.2f}, eta_max~{max(etas):.4f}")
-
-
-def theta_RMS(p, X_al, X_cu, X_pb):
-    """The acceptance-truncated space-angle RMS itself (manuscript Eq. 8:
-    (1+eps_M)*theta_space === theta_RMS(theta_cut)), NOT the fractional
-    mismatch. This is the denominator of the acceptance-matched estimator
-    w_Q = (dtheta / theta_RMS(theta_cut, p, x/X0))^2 -- Eq. (15), Sec. 5.1 --
-    whose numerator and denominator are evaluated within the SAME acceptance,
-    giving E[w_Q]=1 exactly (unlike w_nom/I_nom, which normalizes by the
-    Highland core width instead of the truncated second moment). Derived from
-    eps_M rather than re-integrating, since theta_RMS = (1+eps_M)*theta_space
-    by construction (Eq. 8) and eps_M is already cached per bucket."""
-    xX0 = (X_al / MATERIALS["Al"]["rho"] / MATERIALS["Al"]["X0"]
-           + X_cu / MATERIALS["Cu"]["rho"] / MATERIALS["Cu"]["X0"]
-           + X_pb / MATERIALS["Pb"]["rho"] / MATERIALS["Pb"]["X0"])
-    ts = theta_space_highland(p, xX0)
-    return ts * (1.0 + eps_M(p, X_al, X_cu, X_pb))
-
-
-def optimal_cut(p, X_al, X_cu, X_pb, k_opt=K_OPT):
-    """theta_cut^opt = k_opt * theta_0(p, x/X0) -- Sec. 5.2. theta_0 here is
-    the plane-angle Highland RMS (not theta_space); k_opt is defined relative
-    to theta_0, matching the manuscript's k = theta_cut/theta_0 convention."""
-    xX0 = (X_al / MATERIALS["Al"]["rho"] / MATERIALS["Al"]["X0"]
-          + X_cu / MATERIALS["Cu"]["rho"] / MATERIALS["Cu"]["X0"]
-          + X_pb / MATERIALS["Pb"]["rho"] / MATERIALS["Pb"]["X0"])
-    theta0 = theta_space_highland(p, xX0) / math.sqrt(2.0)
-    return k_opt * theta0
-
-
-_CUT_CACHE_STEP = 0.002   # rad; bucket width for the adaptive-cut RMS cache
+    Despite the historical name, this now performs the correct radial
+    one-dimensional moment integral.  chi_a2 and n are unused because B and
+    chi_c2 completely specify the n<=2 radial series at fixed path/momentum.
+    """
+    del chi_a2, n
+    return _theta_rms_radial(chi_c2, B, cut=cut)
 
 
 @lru_cache(maxsize=16384)
-def _theta_rms_at_cut_bucketed(p_key, X_al_key, X_cu_key, X_pb_key, cut_key):
-    # Zero-material guard: same reasoning as _eps_M_bucketed.
+def _theta_rms_bucketed(p_key, X_al_key, X_cu_key, X_pb_key, cut_key):
     if X_al_key == 0 and X_cu_key == 0 and X_pb_key == 0:
         return 0.0
     p = p_key * P_CACHE_STEP
@@ -212,55 +65,172 @@ def _theta_rms_at_cut_bucketed(p_key, X_al_key, X_cu_key, X_pb_key, cut_key):
     cut = cut_key * _CUT_CACHE_STEP
     chi_c2, chi_a2 = ml.combine_path(X_al, X_cu, X_pb, p)
     B = ml.solve_B(chi_c2, chi_a2)
-    return _theta_rms_disc(chi_c2, chi_a2, B, cut=cut)
+    return _theta_rms_radial(chi_c2, B, cut=cut)
+
+
+def _broadcast_inputs(*xs):
+    arrs = np.broadcast_arrays(*[np.asarray(x, dtype=float) for x in xs])
+    shape = arrs[0].shape
+    return [a.ravel() for a in arrs], shape
+
+
+def _compat_shape(values, shape):
+    """Preserve the repository's historical scalar->length-1-array API."""
+    values = np.asarray(values, dtype=float)
+    return values.reshape(1) if shape == () else values.reshape(shape)
 
 
 def theta_RMS_at_cut(p, X_al, X_cu, X_pb, theta_cut):
-    """theta_RMS(theta_cut, p, x/X0) at an ARBITRARY, per-event acceptance --
-    the denominator of the adaptive acceptance-matched weight (Eq. 15
-    evaluated at theta_cut^opt instead of the fixed 200 mrad cut). Bucketed
-    on (p, X_al, X_cu, X_pb, theta_cut) jointly; the events here span a
-    continuum of adaptive cuts (one per momentum, roughly), so this cache is
-    less effective than the fixed-cut one but still collapses the four
-    momentum settings to a handful of buckets."""
-    p = np.atleast_1d(np.asarray(p, float))
-    X_al = np.atleast_1d(np.asarray(X_al, float))
-    X_cu = np.atleast_1d(np.asarray(X_cu, float))
-    X_pb = np.atleast_1d(np.asarray(X_pb, float))
-    cut = np.atleast_1d(np.asarray(theta_cut, float))
-    out = np.empty(p.size)
-    for i in range(p.size):
-        out[i] = _theta_rms_at_cut_bucketed(
-            round(p[i] / P_CACHE_STEP),
-            round(X_al[i] / X_CACHE_STEP),
-            round(X_cu[i] / X_CACHE_STEP),
-            round(X_pb[i] / X_CACHE_STEP),
-            round(cut[i] / _CUT_CACHE_STEP),
-        )
-    return out
+    """Radial acceptance-truncated RMS at arbitrary cut(s).
+
+    Inputs broadcast to a common shape.  A NumPy array of that shape is
+    returned (a scalar input therefore returns a 0-D array).
+    """
+    (flat, shape) = _broadcast_inputs(p, X_al, X_cu, X_pb, theta_cut)
+    p_f, al_f, cu_f, pb_f, cut_f = flat
+    keys = np.column_stack([
+        np.rint(p_f / P_CACHE_STEP).astype(np.int64),
+        np.rint(al_f / X_CACHE_STEP).astype(np.int64),
+        np.rint(cu_f / X_CACHE_STEP).astype(np.int64),
+        np.rint(pb_f / X_CACHE_STEP).astype(np.int64),
+        np.rint(cut_f / _CUT_CACHE_STEP).astype(np.int64),
+    ])
+    unique, inv = np.unique(keys, axis=0, return_inverse=True)
+    vals = np.empty(unique.shape[0], dtype=float)
+    for i, k in enumerate(unique):
+        vals[i] = _theta_rms_bucketed(*(int(v) for v in k))
+    return _compat_shape(vals[inv], shape)
 
 
-def eps_M_marginal(p, xX0_axial=10 / 8.90 + 15 / 1.44):
-    """Momentum-only marginal at the axial reference path (Al 10cm + Cu 15cm,
-    no Pb) -- this is theta_space's calibration for I_p (Eq. 7): per-momentum
-    only, evaluated at the REFERENCE geometry, not the true per-event path."""
+def theta_RMS(p, X_al, X_cu, X_pb):
+    """Radial RMS for the repository's fixed THETA_CUT acceptance."""
+    return theta_RMS_at_cut(p, X_al, X_cu, X_pb, THETA_CUT)
+
+
+def eps_M(p, X_al, X_cu, X_pb, theta_cut=THETA_CUT):
+    """Fractional radial RMS/Highland mismatch for the same finite acceptance."""
+    (flat, shape) = _broadcast_inputs(p, X_al, X_cu, X_pb, theta_cut)
+    p_f, al_f, cu_f, pb_f, cut_f = flat
+    trms = theta_RMS_at_cut(p_f, al_f, cu_f, pb_f, cut_f).ravel()
+    xX0 = _x_over_x0(al_f, cu_f, pb_f)
+    tspace = np.asarray(theta_space_highland(p_f, xX0), dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out = np.where(tspace > 0.0, trms / tspace - 1.0, 0.0)
+    return _compat_shape(out, shape)
+
+
+def theta_space_corrected(p, X_al, X_cu, X_pb, theta_cut=THETA_CUT):
+    """Alias for the acceptance-matched radial RMS, not a fitted correction."""
+    return theta_RMS_at_cut(p, X_al, X_cu, X_pb, theta_cut)
+
+
+def efficiency(p, X_al, X_cu, X_pb, k):
+    """Manuscript efficiency eta=sqrt(F_c)*M2/sigma(theta^2).
+
+    k is defined by theta_cut=k*theta0, where theta0 is the projected Highland
+    RMS.  The result is model/path/momentum specific; no universality is
+    assumed.
+    """
+    chi_c2, chi_a2 = ml.combine_path(float(X_al), float(X_cu), float(X_pb),
+                                     float(p))
+    if chi_c2 <= 0.0:
+        return 0.0
+    B = ml.solve_B(chi_c2, chi_a2)
+    xX0 = float(_x_over_x0(X_al, X_cu, X_pb))
+    theta0 = float(theta_space_highland(p, xX0)) / math.sqrt(2.0)
+    cut = float(k) * theta0
+    Fc, M2, M4 = ml.radial_moments(chi_c2, B, cut, nmax=2)
+    var = max(M4 - M2 * M2, 0.0)
+    if Fc <= 0.0 or var <= 0.0:
+        return 0.0
+    return math.sqrt(Fc) * M2 / math.sqrt(var)
+
+
+@lru_cache(maxsize=8192)
+def _optimal_k_bucketed(p_key, X_al_key, X_cu_key, X_pb_key,
+                        k_lo_milli=500, k_hi_milli=8000):
+    if X_al_key == 0 and X_cu_key == 0 and X_pb_key == 0:
+        return 0.0
+    p = p_key * P_CACHE_STEP
+    X_al = X_al_key * X_CACHE_STEP
+    X_cu = X_cu_key * X_CACHE_STEP
+    X_pb = X_pb_key * X_CACHE_STEP
+    lo = k_lo_milli / 1000.0
+    hi = k_hi_milli / 1000.0
+
+    res = minimize_scalar(
+        lambda kval: -efficiency(p, X_al, X_cu, X_pb, kval),
+        bounds=(lo, hi), method="bounded",
+        options={"xatol": 2e-4},
+    )
+    if not res.success:
+        raise RuntimeError(f"acceptance optimization failed: {res.message}")
+    return float(res.x)
+
+
+def optimal_k(p, X_al, X_cu, X_pb, bounds=(0.5, 8.0)):
+    """Numerically maximize eta for each supplied momentum/path hypothesis."""
+    lo, hi = map(float, bounds)
+    if not (0.0 < lo < hi):
+        raise ValueError("bounds must satisfy 0 < low < high")
+    (flat, shape) = _broadcast_inputs(p, X_al, X_cu, X_pb)
+    p_f, al_f, cu_f, pb_f = flat
+    keys = np.column_stack([
+        np.rint(p_f / P_CACHE_STEP).astype(np.int64),
+        np.rint(al_f / X_CACHE_STEP).astype(np.int64),
+        np.rint(cu_f / X_CACHE_STEP).astype(np.int64),
+        np.rint(pb_f / X_CACHE_STEP).astype(np.int64),
+    ])
+    unique, inv = np.unique(keys, axis=0, return_inverse=True)
+    vals = np.empty(unique.shape[0], dtype=float)
+    lo_m = int(round(lo * 1000))
+    hi_m = int(round(hi * 1000))
+    for i, k in enumerate(unique):
+        vals[i] = _optimal_k_bucketed(*(int(v) for v in k), lo_m, hi_m)
+    return _compat_shape(vals[inv], shape)
+
+
+def optimal_cut(p, X_al, X_cu, X_pb, k_opt=None, bounds=(0.5, 8.0)):
+    """Return theta_cut for a chosen model/path.
+
+    If k_opt is None, eta is maximized separately for the supplied
+    momentum/path bucket(s).  Passing an explicit k_opt remains available for
+    controlled comparisons, but it is not treated as a manuscript constant.
+    """
+    (flat, shape) = _broadcast_inputs(p, X_al, X_cu, X_pb)
+    p_f, al_f, cu_f, pb_f = flat
+    xX0 = _x_over_x0(al_f, cu_f, pb_f)
+    theta0 = np.asarray(theta_space_highland(p_f, xX0), dtype=float) / math.sqrt(2.0)
+    if k_opt is None:
+        k = optimal_k(p_f, al_f, cu_f, pb_f, bounds=bounds).ravel()
+    else:
+        k = np.broadcast_to(np.asarray(k_opt, dtype=float), shape).ravel()
+    return _compat_shape(k * theta0, shape)
+
+
+def eps_M_marginal(p):
+    """Momentum-only axial-reference diagnostic (Al 10 cm + Cu 15 cm).
+
+    This is retained only as a diagnostic reduction of the full path-dependent
+    eps_M.  It is not the defining calibration for general event paths.
+    """
+    p_arr = np.asarray(p, dtype=float)
     X_al = MATERIALS["Al"]["rho"] * 10.0
     X_cu = MATERIALS["Cu"]["rho"] * 15.0
-    return eps_M(np.atleast_1d(p), np.full_like(np.atleast_1d(p), X_al, float),
-                 np.full_like(np.atleast_1d(p), X_cu, float),
-                 np.zeros_like(np.atleast_1d(p)))
+    return eps_M(p_arr, X_al, X_cu, 0.0)
 
 
-def verify():
-    """Reproduce the manuscript's axial eps_M table (Table, Sec. 2.3)."""
-    paper = {1.0: 5.1, 2.0: 10.8, 3.5: 14.2, 6.0: 17.1}
-    print(f"{'p':>5} {'eps_M/%':>9} {'paper/%':>9}")
+def verify_radial():
+    """Print radial calibration and model-specific eta optimum for axial path."""
+    X_al = MATERIALS["Al"]["rho"] * 10.0
+    X_cu = MATERIALS["Cu"]["rho"] * 15.0
+    print(f"{'p':>5} {'eps_M/%':>10} {'k_opt':>10} {'eta_max':>10}")
     for p in (1.0, 2.0, 3.5, 6.0):
-        e = eps_M_marginal(p)[0] * 100
-        print(f"{p:5.1f} {e:9.2f} {paper[p]:9.1f}")
+        e = float(eps_M(p, X_al, X_cu, 0.0)[0]) * 100.0
+        k = float(optimal_k(p, X_al, X_cu, 0.0)[0])
+        eta = efficiency(p, X_al, X_cu, 0.0, k)
+        print(f"{p:5.1f} {e:10.3f} {k:10.4f} {eta:10.4f}")
 
 
 if __name__ == "__main__":
-    verify()
-    print()
-    verify_kopt()
+    verify_radial()

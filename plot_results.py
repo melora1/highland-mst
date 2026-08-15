@@ -140,19 +140,20 @@ def plot_metrics_bars(metrics, figdir):
     ]
     for i, (ax, (col, err, ylab)) in enumerate(zip(axes, panels)):
         colors = [COLORS.get(im, "gray") for im in metrics["image"]]
-        ax.bar(metrics["image"], metrics[col], yerr=metrics[err],
+        xpos = np.arange(len(metrics))
+        ax.bar(xpos, metrics[col], yerr=metrics[err],
                capsize=3, color=colors, linewidth=0)
         ax.set_ylabel(ylab)
-        ax.tick_params(axis="x", rotation=30)
         # LaTeX tick labels
-        ax.set_xticklabels([
+        labels = [
             r"$I_{\mathrm{nom}}$"   if t == "I_nom"        else
             r"$I_{p}$"              if t == "I_p"           else
             r"$I_{\mathrm{ideal}}$" if t == "I_ideal"       else
             r"$I_{\mathrm{const}}$" if t == "I_const"       else
             r"$I_{Q}$"              if t == "I_Q"           else
             r"$I_{Q,\mathrm{adap}}$"
-            for t in metrics["image"]], rotation=30, ha="right")
+            for t in metrics["image"]]
+        ax.set_xticks(xpos, labels, rotation=30, ha="right")
         _panel_label(ax, PANEL_LABELS[i])
     _save(fig, figdir, "metrics_bars")
     print("\n[metrics_bars] suggested caption:\n"
@@ -164,7 +165,7 @@ def plot_artifact_map(imgs, figdir):
     centers = imgs["centers"]
     iz      = _central_z_index(centers)
     counts  = imgs["counts"][:, :, iz]
-    A = imgs["I_nom"][:, :, iz] - imgs["I_ideal"][:, :, iz]
+    A = imgs["I_nom"][:, :, iz] - imgs["I_Q"][:, :, iz]
     A = np.where(counts >= 20, A, np.nan)
     vmax = np.nanpercentile(np.abs(A), 99) or 1.0
 
@@ -177,11 +178,11 @@ def plot_artifact_map(imgs, figdir):
     ax.set_xlabel(r"$x$ (cm)")
     ax.set_ylabel(r"$y$ (cm)")
     fig.colorbar(im, ax=ax,
-                 label=r"$I_{\mathrm{nom}}-I_{\mathrm{ideal}}$",
+                 label=r"$I_{\mathrm{nom}}-I_{Q}$",
                  shrink=0.85)
     _save(fig, figdir, "artifact_map")
     print("\n[artifact_map] suggested caption:\n"
-          f"  Artifact map $I_{{\\mathrm{{nom}}}}-I_{{\\mathrm{{ideal}}}}$ "
+          f"  Artifact map $I_{{\\mathrm{{nom}}}}-I_Q$ "
           f"($z\\approx{centers[iz]:.2f}$~cm), masked to counts $\\geq20$. "
           "Dashed and dotted circles mark the Pb and Cu ROIs.")
 
@@ -215,8 +216,8 @@ def plot_artifact_summary(artifact, figdir):
     # (a) RMS magnitudes
     ax = axes[0]
     vals_a = [artifact["artifact_rms"], artifact["residual_rms"]]
-    labels_a = [r"artifact RMS" "\n" r"($I_{\mathrm{nom}}-I_{\mathrm{ideal}}$)",
-                r"residual RMS" "\n" r"($I_{p}-I_{\mathrm{ideal}}$)"]
+    labels_a = [r"artifact RMS" "\n" r"($I_{\mathrm{nom}}-I_{Q}$)",
+                r"residual RMS" "\n" r"($I_{p}-I_{Q}$)"]
     bars = ax.bar(labels_a, vals_a,
                   color=["#D55E00", "#009E73"], linewidth=0)
     ax.bar_label(bars, fmt="%.3f", padding=2, fontsize=8)
@@ -277,7 +278,7 @@ def plot_speckle(speckle, figdir):
 
 
 def plot_psf_profile(imgs, figdir, image_name="I_nom",
-                     z_band=5.0, oversample=3, min_bin_count=5):
+                     z_band=5.0, oversample=1, min_bin_count=5):
     from scipy.optimize import curve_fit
     from scipy.special import erfc
     from config import CU_HALF, VOX_SIZE
@@ -388,7 +389,7 @@ def main():
     plot_artifact_summary(artifact, figdir)
     plot_speckle(speckle, figdir)
     plot_psf_profile(imgs, figdir, "I_nom")
-    plot_psf_profile(imgs, figdir, "I_ideal")
+    plot_psf_profile(imgs, figdir, "I_Q")
 
     print(f"\nfigures written to {figdir}/ (.pdf for LaTeX, .png for preview)")
 

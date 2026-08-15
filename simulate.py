@@ -4,14 +4,17 @@ Everything downstream (Branch A, Branch B, correction) reads these tables.
 Nothing downstream re-simulates.
 
 Mode:
-  mode='moliere'  -> theta_x, theta_y from the truncated Moliere expansion
+  mode='moliere'  -> correlated (theta_x, theta_y) from the radial n<=2 Moliere expansion
   mode='gauss'    -> theta_x, theta_y ~ N(0, theta0^2), theta0 from Eq. (1)
                      at p_true and the per-event x/X0.  This is the n=0
                      control run used to isolate the truncation bias.
 
 Deflection resolution sigma_delta is NOT injected by hand: it emerges from
-smearing the station hits, so the stations-3/4 correlation between
-p_meas and Delta-theta_space (Sec. 3.4) is present by construction.
+smearing the station hits.
+
+This simulator remains a CONSTANT-MOMENTUM target model: p_true is used for
+the full material path. It is therefore a weak-loss/control implementation,
+not the manuscript's p(X) generalization for appreciable energy loss.
 """
 
 import os
@@ -144,7 +147,13 @@ def simulate_setting(p_set, n=N_PER_SETTING, mode="moliere", seed_offset=0,
     xx0_true = x_over_X0(tAl, tCu, tPb)
     X_al, X_cu, X_pb = areal_densities(tAl, tCu, tPb)
 
-    # RECO trajectory through the REFERENCE geometry (weight denominator)
+    # TRUE trajectory through the REFERENCE geometry.  These columns support
+    # the manuscript's ideal true-parameter w_Q diagnostic separately from
+    # the detector-level reconstructed plug-in weight below.
+    rtAl, rtCu, rtPb = trace_ref(o_true, u_true)
+    X_al_ref_true, X_cu_ref_true, X_pb_ref_true = areal_densities(rtAl, rtCu, rtPb)
+
+    # RECO trajectory through the REFERENCE geometry (detector plug-in denominator)
     o_rec = np.stack([x_in, y_in, np.zeros(n)], axis=1)
     u_rec = np.stack([tx_in, ty_in, np.ones(n)], axis=1)
     u_rec /= np.linalg.norm(u_rec, axis=1, keepdims=True)
@@ -220,6 +229,8 @@ def simulate_setting(p_set, n=N_PER_SETTING, mode="moliere", seed_offset=0,
         xx0_true=xx0_true,
         xx0_ref=xx0_ref,
         X_al_ref=X_al_ref, X_cu_ref=X_cu_ref, X_pb_ref=X_pb_ref,
+        X_al_ref_true=X_al_ref_true, X_cu_ref_true=X_cu_ref_true,
+        X_pb_ref_true=X_pb_ref_true,
         t_Al=tAl, t_Cu=tCu, t_Pb=tPb,
         poca_x=poca[:, 0], poca_y=poca[:, 1], poca_z=poca[:, 2],
     ))

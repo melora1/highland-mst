@@ -93,6 +93,43 @@ config/εM source, don't mix its numbers into the paper's Results section):
 python3 run_all.py
 ```
 
+## IMPORTANT: `tests.py` validates a different configuration than `results_pipeline.py` uses
+
+This was found while fixing the `STEER_COMPENSATION` documentation bug
+below, and is more important than that bug itself.
+
+`results_pipeline.py` now correctly forces `STEER_COMPENSATION='per_setting'`
+(see that file's header). `tests.py` — which the "Run order" below says to
+run first, and which must be all-PASS — validates `config.py`'s **file
+default**, which is `'none'`. These are two different configurations. A
+green `tests.py` run therefore certifies nothing about the configuration
+`results_pipeline.py` actually uses.
+
+This isn't cosmetic. `tests.py::test_momentum_position_correlation_exists`
+exists specifically to check whether the momentum-position correlation that
+Sec. 2.3/4.4's spatially-structured artifact requires is present under the
+chosen configuration, and its own docstring says explicitly: *"Failing here
+does not mean the code is wrong. It means the configuration cannot support
+the paper's central claim, and one of the two has to change."* Run that test
+under `STEER_COMPENSATION='per_setting'` (the config `results_pipeline.py`
+actually uses) and it **fails**: median-PoCA-x spread is ~0.03–0.04 cm
+against a 0.6 cm voxel — no detectable momentum-position correlation. Under
+`'none'` (what `tests.py` currently checks) it passes trivially, because
+`'none'` manufactures the correlation via the uncorrected dipole kick.
+
+`results_pipeline.py` now runs this same check itself, under its own actual
+config, before the expensive simulation, and prints a loud (non-fatal)
+warning if the spread is sub-voxel — so this can no longer happen silently.
+**Do not fix this by editing `config.py`'s default** — see the note in
+`config.py` next to `STEER_COMPENSATION` explaining why that was tried and
+reverted (it just makes `tests.py`'s step-0 gate fail instead, moving the
+problem rather than resolving it). The actual open question — whether the
+paper's central spatially-structured-artifact claim has any physical
+mechanism once the beamline is honestly re-steered — is a physics/paper
+question, not a code bug, and needs a human decision: either the manuscript's
+framing needs to change, or a different source of momentum-position
+correlation than dipole mis-steering needs to be identified and argued for.
+
 ## Two configuration decisions that matter — read before changing `config.py`
 
 These are physics/experimental-design decisions, not tuning knobs. Both are
@@ -107,18 +144,32 @@ equal exposure per node — how tagged-beam facilities actually cover an
 extended target. `'uniform'` (flood illumination) and `'pencil'` remain
 available if you want to compare.
 
-**`STEER_COMPENSATION`** — `config.py` default is `'none'`; `results_pipeline.py`
-overrides this to `'per_setting'` at runtime (it patches `config` *before*
-importing `simulate`, so it never touches the file on disk). This matters
-because the uncorrected dipole kick (`'none'`) manufactures a large
-momentum-position correlation that would trivially produce the
-spatially-structured artifact Sec. 2.3/4.4 claims — `'per_setting'` (a beam
-re-steered per momentum setting, as a real tagged beamline is operated) is
-what the manuscript's Sec. 3.3 actually specifies, and is the harder,
-honest test of whether that claim survives. The repo's own
-`test_momentum_position_correlation_exists` documents the difference
+**`STEER_COMPENSATION`** — `config.py` default is now `'per_setting'`;
+`results_pipeline.py` also forces this explicitly at runtime (patches
+`config` *before* importing `simulate`, so it never touches the file on
+disk) regardless of the default, as belt-and-suspenders for any other entry
+point. This matters because the uncorrected dipole kick (`'none'`)
+manufactures a large momentum-position correlation that would trivially
+produce the spatially-structured artifact Sec. 2.3/4.4 claims —
+`'per_setting'` (a beam re-steered per momentum setting, as a real tagged
+beamline is operated) is what the manuscript's Sec. 3.3 actually specifies,
+and is the harder, honest test of whether that claim survives. The repo's
+own `test_momentum_position_correlation_exists` documents the difference
 (4.90 cm spread with `'none'` vs. 0.04 cm with `'per_setting'`, against a
 0.6 cm voxel).
+
+**Bug fixed:** earlier versions of `results_pipeline.py` documented this
+override in the comment above but never implemented it — the script silently
+ran under `config.py`'s then-default of `'none'` every time. Both the
+runtime patch and the config default are now fixed (see `results_pipeline.py`
+header and `config.py`). **Any results produced by `results_pipeline.py`
+before this fix — including the numbers in "Reading the results" below —
+were computed under the unintended `'none'` pathway and must be re-run.** A
+spot-check at reduced statistics (n=20,000/setting) after the fix showed the
+decisive orthogonal-fraction number moving from 0.210 (`'none'`, matching the
+pre-fix behavior) to 0.159 (`'per_setting'`, the intended/honest test) — a
+~24% shift, well outside noise at that n. This is not a subtle effect; treat
+every previously-reported Sec. 5.4 number as provisional until rerun.
 
 ## Reading the results
 
@@ -127,11 +178,15 @@ the paper's central imaging claim: **`orthogonal (genuine structure) fraction`**
 in the artifact decomposition. It's the RMS of the component of the
 I_nom − I_ideal artifact map that is *not* explainable by a uniform rescale
 (the I_const null control) — i.e. genuine momentum/path-length-driven spatial
-structure surviving a re-steered beamline. At n=50,000/setting this measured
-**0.249** with a 90.4% per-momentum correction reduction, i.e. most of the
-artifact is a global rescale but a real ~25% residual structure survives —
-run the full convergence scan (step 4 above) before treating that number as
-final.
+structure surviving a re-steered beamline.
+
+**Stale pending re-run:** at n=50,000/setting this previously measured
+**0.249** with a 90.4% per-momentum correction reduction. That run predates
+the `STEER_COMPENSATION` fix above (see "Two configuration decisions") and
+was almost certainly computed under the unintended `'none'` pathway rather
+than the honest `'per_setting'` test — do not cite 0.249/90.4% until this is
+rerun with the fixed pipeline. Run the full convergence scan (step 4 above)
+before treating any new number as final.
 
 ## Verification tags used in the manuscript/bib comments
 
@@ -154,5 +209,16 @@ imaging results this repo produces are no longer in this category once run).
   "Reading the results" above.
 - Geant4 cross-check (Sec. 3): harness ready (`geant4_compare.py`); actual
   Geant4 runs are external and not yet done.
-- Manuscript Discussion/Conclusions: not yet written; depend on the
-  converged results-pipeline numbers.
+- Manuscript: a theory-only version exists with full Discussion and
+  Conclusions sections (simulation-dependent claims and run-specific numbers
+  deliberately stripped, so this version does not block on results-pipeline
+  convergence). Still outstanding for the full version: (1) a numeric
+  Results section (Sec. 5.2-5.4) — now blocked on re-running
+  `results_pipeline.py` post-`STEER_COMPENSATION`-fix, since the previous
+  numbers are stale (see "Reading the results"); (2) a Sec. 3 Geant4
+  cross-check writeup once those runs are done; (3) an explicit statement of
+  the Cu/Pb ROI mask-difference convention (see `branch_b.py`'s inline note
+  on the r=3.75 cm Cu ROI overlapping the Pb cylinder) — the paper's ROI
+  definition is currently ambiguous on this point and `branch_b.py`'s
+  behavior (excluding Pb-ROI voxels from the Cu ROI by mask difference)
+  should be stated in the text, not just in code comments.
