@@ -376,6 +376,10 @@ def main():
     print(f"non-rescaling orthogonal fraction       = {art['orth_fraction']:.3f}")
     print(f"residual RMS (I_p  - I_Q)            = {art['residual_rms']:.4g}")
     print(f"per-momentum correction reduction        = {art['reduction']:.3f}")
+    # after the existing artifact_decomposition call
+    art_const = artifact_decomposition(img_nom, img_Q, img_const, counts)
+    print(f"residual RMS (I_const - I_Q)          = {art_const['residual_rms']:.4g}")
+    print(f"uniform-rescale-only reduction         = {art_const['reduction']:.3f}")
 
     # ------------------------------------------------------------------ save
     # flat per-file outputs
