@@ -1,3 +1,4 @@
+#plot_results.py
 #!/usr/bin/env python3
 """
 plot_results.py  --  journal-ready figures from results_pipeline.py output.
@@ -9,6 +10,7 @@ Reads from:  {outdir}/images.npz, metrics.csv, artifact.csv, speckle.csv
 Writes to:   {outdir}/figs/  (.pdf for LaTeX, .png for preview)
 Figure filenames include the run-directory parameter tag, e.g.
     slices_all_seed0_n500000.pdf
+
 
 Journal conventions:
   * No in-figure titles. Captions printed to stdout, ready to paste.
