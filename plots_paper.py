@@ -413,7 +413,8 @@ def plot_images(
         _add_target_overlay(ax)
         ax.set_xlabel(r"$x$ (cm)")
         ax.set_title(label)
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.03, label="weight difference")
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.025)
+        cbar.ax.set_ylabel("")
         _panel(ax, "ab"[i])
     axes[0].set_ylabel(r"$y$ (cm)")
     if count_mask is not None and np.any(count_mask):
@@ -572,9 +573,7 @@ def plot_paired(csv_path: Path, figdir: Path):
         ax.set_ylabel(ylabel)
         ax.text(-0.10, 1.01, f"({letter})", transform=ax.transAxes,
                 ha="left", va="bottom", fontweight="bold", fontsize=10)
-    fig.suptitle(fr"mean $\pm$ SD, $n={int(d.n.max())}$ matched seeds",
-                 fontsize=8.6, y=0.965)
-    fig.subplots_adjust(top=0.82, bottom=0.19, wspace=0.32)
+    fig.subplots_adjust(top=0.92, bottom=0.19, wspace=0.32)
     _save(fig, source, "seed_summary", figdir)
 
 
