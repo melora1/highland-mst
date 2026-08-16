@@ -485,11 +485,26 @@ class MoliereSampler:
         X_al = key[1] * X_CACHE_STEP
         X_cu = key[2] * X_CACHE_STEP
         X_pb = key[3] * X_CACHE_STEP
-        chi_c2, chi_a2 = combine_path(X_al, X_cu, X_pb, p)
+
+        # Step 1, Section B: draw from the energy-loss-aware accumulation
+        # rather than constant-p combine_path.  chi_c2 accumulates local
+        # 0.157*Z(Z+1)*(X_j/A_j)/(p_j*beta_j)^2 over slices of the degraded
+        # profile p(X); at constant p this is identical to combine_path (see
+        # test_pofx.test_constant_p_limit).  Local import: energy_loss.py
+        # imports this module at module scope, so importing it there would
+        # be circular.
+        from energy_loss import accumulate_moliere, ordered_path, slice_path
+        t_al = X_al / MATERIALS["Al"]["rho"]
+        t_cu = X_cu / MATERIALS["Cu"]["rho"]
+        t_pb = X_pb / MATERIALS["Pb"]["rho"]
+        if t_al + t_cu + t_pb <= 0.0:
+            self._cache[key] = None
+            return None
+        slices, _ = slice_path(ordered_path(t_al, t_cu, t_pb), p)
+        chi_c2, chi_a2, B = accumulate_moliere(slices)
         if chi_c2 == 0.0:
             self._cache[key] = None
             return None
-        B = solve_B(chi_c2, chi_a2)
         eta_grid, cdf, clipped = radial_cdf_eta(B, nmax=self.nmax)
         self.max_clipped = max(self.max_clipped, clipped)
         item = (np.sqrt(chi_c2 * B), B, eta_grid, cdf)
@@ -544,3 +559,4 @@ class MoliereSampler:
             i = j
 
         return tx, ty
+        

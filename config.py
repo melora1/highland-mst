@@ -1,149 +1,92 @@
-"""Single source of truth for all constants. Units: cm, GeV/c unless noted.
+"""Configuration for the revised Highland/Moliere tomography study.
 
-Note on units: Highland (Eq. 1) and the Moliere appendix expressions use
-p in MeV/c and areal density X in g cm^-2. Conversions are done explicitly
-at the call sites in kinematics.py / moliere.py; everything stored in the
-event table is in GeV/c, cm, rad.
+Units are cm, GeV/c, rad unless stated otherwise.  The geometry/material
+numbers match the final revision plan rather than the rounded legacy values.
 """
+from __future__ import annotations
 
+from dataclasses import dataclass
 import numpy as np
 
-# ---------------------------------------------------------------- physics
-M_MU = 0.10566        # GeV/c^2
+M_MU = 0.10566
+M_E = 0.000510998950
 ALPHA = 1.0 / 137.036
 
-# ---------------------------------------------------------------- materials
-# name -> (Z, A, rho [g/cm^3], X0 [cm])   PDG / LBL values per Sec. 3.1
+@dataclass(frozen=True)
+class Material:
+    Z: float
+    A: float
+    rho: float       # g cm^-3
+    X0: float        # cm
+    I_eV: float
+    Cbar: float
+    x0: float
+    x1: float
+    a: float
+    k: float
+    delta0: float
+
+# Radiation lengths/densities follow the reference quantities adopted in the
+# revision plan. Sternheimer constants are the same transcribed values used in
+# the supplied code and must be checked against the primary PDG/LBL table before
+# publication; tests only provide an indirect minimum-ionisation closure check.
 MATERIALS = {
-    "Al": dict(Z=13.0, A=26.98, rho=2.70, X0=8.90),
-    "Cu": dict(Z=29.0, A=63.55, rho=8.96, X0=1.44),
-    "Pb": dict(Z=82.0, A=207.2, rho=11.35, X0=0.56),
+    "Al": Material(13.0, 26.98, 2.699, 8.896, 166.0, 4.2395, 0.1708, 3.0127, 0.08024, 3.6345, 0.12),
+    "Cu": Material(29.0, 63.55, 8.96, 1.436, 322.0, 4.4190, -0.0254, 3.2792, 0.14339, 2.9044, 0.08),
+    "Pb": Material(82.0, 207.2, 11.35, 0.5612, 823.0, 6.2018, 0.3776, 3.8073, 0.09359, 3.1608, 0.14),
 }
 MAT_ORDER = ("Al", "Cu", "Pb")
+PDG_MIN_DEDX = {"Al": 1.615, "Cu": 1.403, "Pb": 1.122}  # MeV cm^2 g^-1, validation only
 
-# ---------------------------------------------------------------- geometry
-AL_HALF = 12.5        # cm, outer aluminium shell 25^3
-CU_HALF = 7.5         # cm, copper block 15^3
-PB_R = 2.0            # cm
-PB_HALF_Z = 7.5       # cm  (full height 15 cm, co-extensive with Cu in z)
-PB_CX = 3.0           # cm  transverse offset
-PB_CY = 2.0           # cm
+# Target
+AL_HALF = 12.5
+CU_HALF = 7.5
+PB_R = 2.0
+PB_HALF_Z = 7.5
+PB_CX = 3.0
+PB_CY = 2.0
 
-# ---------------------------------------------------------------- detector
-SIGMA_HIT = 0.020     # cm  (200 um)
-STATION_Z = np.array([-120.0, -90.0, -45.0, -15.0, +25.0, +65.0])  # cm
-Z_PRE = (STATION_Z[0], STATION_Z[1])    # lever arm 30 cm
-Z_POST = (STATION_Z[2], STATION_Z[3])   # lever arm 30 cm
-Z_DOWN = (STATION_Z[4], STATION_Z[5])   # lever arm 40 cm
+# Tracking/momentum tagger
+SIGMA_HIT = 0.020
+STATION_Z = np.array([-120.0, -90.0, -45.0, -15.0, 25.0, 65.0])
+B_FIELD = 1.0
+L_EFF = 0.30
+BL = B_FIELD * L_EFF
+Z_MAGNET_CM = -65.0
 
-# dipole
-B_FIELD = 1.0         # T
-L_EFF = 0.30          # m
-Z_MAGNET = -0.65      # m -> cm below; kick applied at magnet centre
-Z_MAGNET_CM = -65.0   # cm  (magnet spans -80 .. -50 cm)
-BL = B_FIELD * L_EFF  # T.m
+# Beam/exposure
+MOMENTA = (1.0, 2.0, 3.5, 6.0)
+MOM_BITE = 0.01
+SIGMA_DIV = 2.0e-3
+SIGMA_XY = 1.0
+# Revised raster reaches the Al-only region while staying 1.5 cm from shell edge.
+RASTER_HALF = 11.0
+RASTER_NX = 9
+RASTER_NY = 9
+# Used by simulation.py. "per_setting" is production; "none" is retained as
+# a diagnostic showing the several-cm momentum-position correlation an
+# uncompensated dipole would create.
+STEER_COMPENSATION = "per_setting"
 
-# ---------------------------------------------------------------- beam
-MOMENTA = (1.0, 2.0, 3.5, 6.0)   # GeV/c
-N_PER_SETTING = 500_000
-SIGMA_DIV = 2.0e-3    # rad angular divergence
-MOM_BITE = 0.01       # fractional, Gaussian
-
-# BEAM_MODE -- this is a SPEC DECISION, not a tuning knob. See README.
-#
-#   'pencil'  sigma_xy = SIGMA_XY Gaussian spot, single fixed position. This
-#             is what an earlier draft of Sec. 4.1 specified. Combined with
-#             the dipole, which steers the beam by 0.3*B*L/p * |Z_MAGNET_CM|
-#             = 5.85/p cm at the target (5.84 cm at 1 GeV/c down to 0.97 cm
-#             at 6) when STEER_COMPENSATION='none', each momentum lights a
-#             ~2 cm strip at a different x with y pinned near 0. Even with
-#             STEER_COMPENSATION='per_setting' (on axis), a single sigma_xy=1
-#             cm spot only covers a 7.7 cm (95%) span against the 15 cm Cu
-#             block -- test_beam_covers_target_face fails under this mode by
-#             design; there is no tomogram to reconstruct.
-#
-#   'uniform' Flat illumination over UNIFORM_HALF in x and y, covering the
-#             full Cu face. Solves coverage but is not how a tagged momentum
-#             beam is actually operated (real facilities do not flood a
-#             target uniformly with a characterized beam).
-#
-#   'raster'  DEFAULT. A sigma_xy=SIGMA_XY pencil beam, as in 'pencil', swept
-#             over an RASTER_NX x RASTER_NY grid of center positions spanning
-#             the Cu face (RASTER_HALF in x and y), with equal exposure per
-#             node. This is how tagged-beam tomography facilities actually
-#             cover an extended target: narrow, well-characterized spot,
-#             scanned. Retains the momentum-dependent dipole steering
-#             (STEER_COMPENSATION still applies on top of the raster grid),
-#             so the momentum-position correlation Sec. 2.3's artifact
-#             mechanism needs is whatever STEER_COMPENSATION leaves behind --
-#             the raster grid itself carries no p-dependence.
-#
-BEAM_MODE = "raster"
-SIGMA_XY = 1.0        # cm, used when BEAM_MODE in ('pencil', 'raster')
-UNIFORM_HALF = 11.0   # cm, used when BEAM_MODE == 'uniform'
-
-# Raster grid: node spacing chosen so 3*SIGMA_XY overlap between adjacent
-# nodes gives near-uniform effective coverage, out to +/- RASTER_HALF, which
-# comfortably spans the Cu block (CU_HALF = 7.5 cm) including corners once
-# spot width is added.
-RASTER_NX = 7
-RASTER_NY = 7
-RASTER_HALF = 7.5     # cm; node centers span [-7.5, +7.5] in x and y
-
-# STEER_COMPENSATION -- the decisive knob for Sec. 2.3, more so than BEAM_MODE.
-#
-#   'none'         The dipole kick is applied and never corrected, so setting p
-#                  lands 5.85/p cm off axis. This is what the code did
-#                  implicitly. It manufactures a large momentum-position
-#                  correlation -- which is exactly the correlation Sec. 2.3's
-#                  spatially-structured artifact requires.
-#
-#   'per_setting'  The beamline is retuned for each momentum setting so every
-#                  setting lands on the target axis, as a real tagged beamline
-#                  would be operated. The residual momentum-position
-#                  correlation is then only what the 1% momentum bite produces
-#                  WITHIN a setting: ~0.06 cm at 1 GeV/c, not 5.85 cm.
-#
-# This is not a tuning choice, it is a claim about how the experiment is run,
-# and Sec. 2.3's central mechanism stands or falls on it. Quantified in the
-# README.
-#
-# NOTE: keep the file default as "none".  It is the diagnostic/legacy
-# configuration used to demonstrate the large momentum-position correlation
-# produced by an uncompensated dipole.  The production diagnostic pipeline
-# deliberately overrides this to "per_setting" BEFORE importing simulate.py,
-# matching a beamline re-steered for each nominal momentum setting.
-#
-# tests.py validates BOTH configurations separately:
-#   * uncompensated/"none" must show the large setting-dependent displacement;
-#   * production/"per_setting" must keep the median setting-to-setting PoCA-x
-#     spread below one voxel.
-#
-# This split is intentional.  Do not infer production behavior from this file
-# default alone; results_pipeline.py is the source of truth for production
-# steering.
-STEER_COMPENSATION = "none"
-
-# ---------------------------------------------------------------- selection
-THETA_CUT = 200e-3    # rad, space-angle acceptance cut
-
-# ---------------------------------------------------------------- imaging
+# Acceptance/reconstruction
+THETA_CUT = 0.200
+VOX_HALF = 15.0
 N_VOX = 50
-VOX_HALF = 15.0       # cm, grid spans +-15 cm
-VOX_SIZE = 2 * VOX_HALF / N_VOX   # 0.6 cm
+VOX_SIZE = 2 * VOX_HALF / N_VOX
+MIN_VOX_COUNT = 20
 PB_ROI_R = 2.0
 PB_ROI_ZHALF = 7.5
 CU_ROI_R = 3.75
 CU_ROI_ZHALF = 7.5
-MIN_VOX_COUNT = 20    # mask for artifact maps
 
-# ---------------------------------------------------------------- moliere sampler
-THETA_GRID_MAX = 400e-3   # rad; CDF support, well beyond THETA_CUT
-THETA_GRID_N = 4001
-# cache bucketing (coarse enough to reuse CDFs, fine enough not to bias)
-P_CACHE_STEP = 0.010      # GeV/c
-X_CACHE_STEP = 0.25       # g/cm^2
+# Numerical controls
+P_CACHE_STEP = 0.010          # GeV/c
+X_CACHE_STEP = 0.25           # g cm^-2
+SEG_CACHE_STEP = 0.25         # g cm^-2, ordered-segment cache
+CUT_CACHE_STEP = 0.002        # rad
+P_BETA_SLICE_TOL = 0.01
+RADIAL_ETA_MAX = 30.0
+RADIAL_TABLE_ETA_MAX = 30.0
 
-# ---------------------------------------------------------------- run control
 SEED_BASE = 20260713
 OUT_DIR = "out"

@@ -91,9 +91,15 @@ def _preflight_correlation_check():
     return spread, production_ok
 import branch_b as bb
 from config import MOMENTA, OUT_DIR, MATERIALS
-from eps_quadrature import (theta_RMS, theta_RMS_at_cut, optimal_cut,
-                             eps_M_marginal)
+from eps_quadrature import theta_RMS_at_cut, optimal_cut
+from eps_quadrature_pofx import theta_RMS_pofx, eps_M_marginal_pofx
 from kinematics import theta_space_highland
+
+# NOTE ON SCOPE: theta_RMS_at_cut / optimal_cut (the adaptive-acceptance
+# image, I_Q_adaptive) remain constant-p.  Only the fixed-200-mrad images
+# (I_nom, I_p, I_ideal, I_Q, I_const) are patched to p(X) below, matching
+# Step 1's scope.  Making the adaptive cut p(X)-aware would need a bucketed
+# optimal_k_pofx and is deliberately left for a later step.
 
 
 # ------------------------------------------------------------------ weights
@@ -121,15 +127,21 @@ def build_weights(df):
     with np.errstate(divide="ignore", invalid="ignore"):
         w_nom = np.where(tspace_ref > 0, (dth / tspace_ref) ** 2, 0.0)
 
-    eps_p = eps_M_marginal(p)
+    # Step 1, Section A: I_p's denominator is theta_space at the TAGGED
+    # incident momentum p_meas, while the muon scatters on the degraded
+    # p(X) profile.  eps_M_marginal_pofx(mixed=True) is exactly that ratio
+    # (see energy_loss.py and eps_quadrature_pofx.py docstrings); the old
+    # constant-p eps_M_marginal(p) is no longer used here.
+    eps_p = eps_M_marginal_pofx(p, mixed=True)
     with np.errstate(divide="ignore", invalid="ignore"):
         w_p = np.where(tspace_ref > 0,
                        (dth / ((1.0 + eps_p) * tspace_ref)) ** 2, 0.0)
 
-    # Reconstructed plug-in calibration.  The manuscript explicitly notes
-    # that exact detector-level E[w_Q]=1 additionally requires conditioning
-    # on the p/path resolution model; this plug-in does not claim that.
-    trms_ref = theta_RMS(p, X_al_ref, X_cu_ref, X_pb_ref)
+    # Reconstructed plug-in calibration, p(X)-aware.  The manuscript
+    # explicitly notes that exact detector-level E[w_Q]=1 additionally
+    # requires conditioning on the p/path resolution model; this plug-in
+    # does not claim that.
+    trms_ref = theta_RMS_pofx(p, X_al_ref, X_cu_ref, X_pb_ref)
     with np.errstate(divide="ignore", invalid="ignore"):
         w_Q = np.where(trms_ref > 0, (dth / trms_ref) ** 2, 0.0)
 
@@ -140,10 +152,10 @@ def build_weights(df):
         raise RuntimeError(
             "event table predates radial/true-reference correction; regenerate "
             f"with corrected simulate.py (missing {missing})")
-    trms_true = theta_RMS(df.p_true.values,
-                          df.X_al_ref_true.values,
-                          df.X_cu_ref_true.values,
-                          df.X_pb_ref_true.values)
+    trms_true = theta_RMS_pofx(df.p_true.values,
+                               df.X_al_ref_true.values,
+                               df.X_cu_ref_true.values,
+                               df.X_pb_ref_true.values)
     with np.errstate(divide="ignore", invalid="ignore"):
         w_ideal = np.where(trms_true > 0,
                            (df.dth_true.values / trms_true) ** 2, 0.0)
@@ -292,6 +304,29 @@ def main():
     w_nom, w_p, w_ideal, w_const, w_Q, eps_bar, eps_ref = build_weights(df)
     print(f"\nevent-weighted mean eps_M (reference path, I_const bias) = "
           f"{eps_bar*100:+.2f}%")
+
+    # Step 1 diagnostic: how much momentum the reference path actually
+    # costs, weighted the same way eps_bar is.  The axial path alone
+    # (10 cm Al + 15 cm Cu) shows Delta p/p from -24.8% (1 GeV/c) to -4.9%
+    # (6 GeV/c); this reports what the RASTER-AVERAGED reference path shows,
+    # which is expected to be smaller because most raster weight sits on
+    # shorter, less lossy paths than the axial worst case.
+    from eps_quadrature_pofx import p_exit
+    p_meas_vals = df.p_meas.values
+    p_out_vals = p_exit(p_meas_vals, df.X_al_ref.values,
+                        df.X_cu_ref.values, df.X_pb_ref.values)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dpp = np.where(p_meas_vals > 0, p_out_vals / p_meas_vals - 1.0, 0.0)
+    w_pos = np.where(w_nom > 0, w_nom, 0.0)
+    print(f"event-weighted mean Delta p/p through the reference path    = "
+          f"{100*np.average(dpp, weights=w_pos):+.2f}%")
+    for pset in sorted(df.p_set.unique()):
+        m = df.p_set.values == pset
+        wm = w_pos[m]
+        mean_dpp = (100 * np.average(dpp[m], weights=wm)
+                    if wm.sum() > 0 else float("nan"))
+        print(f"  p_set={pset:4.1f}: mean Delta p/p = {mean_dpp:+.2f}%  "
+              f"(n={m.sum()})")
 
     sample = np.stack([df.poca_x.values, df.poca_y.values, df.poca_z.values], 1)
     bins   = (bb.EDGES, bb.EDGES, bb.EDGES)

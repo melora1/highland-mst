@@ -2,18 +2,30 @@
 
     python3 test_pofx.py
 
-Same runner convention as tests.py.  Replaces the first version, which had
-two tests that compared an exact calculation against a bucketed one and
-failed for that reason rather than for a physics reason.
+Same runner convention as tests.py.
 
 NOTE ON BUCKETING.  eps_quadrature.eps_M / theta_RMS and the vectorised
 eps_quadrature_pofx entry points quantize the areal density to
 config.X_CACHE_STEP (0.25 g/cm^2).  The axial reference path has
 X_Cu = 8.96*15 = 134.4 g/cm^2, which rounds UP to 134.5, so the bucketed
 numerator sees 0.28 mm of extra copper against an unrounded denominator.
-Comparisons between exact and bucketed calculations must either snap the
-inputs onto the grid or account for that offset.  Two tests below do the
-former; two more pin the offset so it cannot drift unnoticed.
+Two distinct offsets follow from this, and they are NOT the same size:
+
+  eps_M_pofx  (both sides from the same bucketed calibrate() call) has a
+              small NEGATIVE residual, about -0.009 pp on the axial path.
+  eps_M_mixed and eps_quadrature.eps_M (numerator bucketed, denominator at
+              the raw x/X0) have a larger POSITIVE offset, about +0.033 to
+              +0.044 pp.  The p(X) numerator's offset is larger than the
+              constant-p one because the extra 0.1 g/cm^2 of rounded-in
+              copper also costs extra energy, amplifying the effect.
+
+Tables and figures on a FIXED reference path must use the *_exact functions
+or eps_M_marginal[_pofx], not the bucketed API; per-event calls on a varying
+path may use the bucketed API, where the rounding is unbiased.
+
+Section B (the sampler patch in moliere.py) is validated separately by
+test_sampler_uses_pofx_accumulation, which requires the patched moliere.py
+and energy_loss.py to be importable.
 """
 import math
 
@@ -22,7 +34,7 @@ import numpy as np
 import energy_loss as el
 import moliere as ml
 import stopping
-from config import MATERIALS, MOMENTA, THETA_CUT, X_CACHE_STEP
+from config import MATERIALS, MOMENTA, P_CACHE_STEP, THETA_CUT, X_CACHE_STEP
 from eps_quadrature import eps_M as eps_M_constp, optimal_k
 from eps_quadrature_pofx import eps_M_mixed, eps_M_pofx, theta_RMS_pofx
 from kinematics import theta0_highland, theta_space_highland
@@ -249,6 +261,7 @@ def test_vectorised_api_matches_scalar_core_on_grid():
         assert abs(float(theta_RMS_pofx(p, *X_snap)[0])
                    - direct["th_rms"]) < 1e-12, p
 
+
 def test_vectorised_api_shape_contract():
     """Must match eps_quadrature's historical scalar -> length-1-array API."""
     X = _areal(AXIAL)
@@ -256,24 +269,7 @@ def test_vectorised_api_shape_contract():
     assert eps_M_pofx(np.array([1.0, 2.0, 3.5, 6.0]), *X).shape == (4,)
 
 
-    """Corrections to test_pofx.py after the exact-calibration change.
-
-1. DELETE `test_vectorised_api_bucketing_bias_tracks_constant_p_case`.
-   Its premise was wrong.  eps_M_pofx takes numerator AND denominator from
-   the same calibrate() call at the same bucketed X, so the sqrt(X) scaling
-   cancels and only the truncation residual survives (-0.0086 pp measured).
-   eps_M_constp rounds the numerator only (+0.0327 pp).  They cannot track
-   each other, and the well-behaved one was being penalised for it.
-
-2. ADD everything below.  The first two replace the deleted test with the
-   comparison that IS structurally required; the rest cover the exact API
-   and the two momentum interpolants.
-"""
-
-# --------------------------------------------------------------------------
-# Replaces the deleted test
-# --------------------------------------------------------------------------
-
+# --------------------------------------------------------- bucketing offsets
 def test_pofx_selfconsistent_bias_is_small_and_negative():
     """eps_M_pofx buckets BOTH sides of the ratio, so the sqrt(X) scaling
     cancels and only the truncation residual survives.  It must be an order
@@ -289,12 +285,12 @@ def test_pofx_mixed_bias_tracks_constant_p_case():
     """eps_M_mixed and eps_quadrature.eps_M both round the numerator only, so
     both carry the one-sided offset on the axial path and both are positive.
 
-    They do NOT match exactly, and should not.  In the p(X) numerator the
-    extra 0.1 g/cm^2 of copper from the rounding also costs extra energy,
-    lowering p through the remainder of the path and raising theta_rms by
-    more than the sqrt(X) scaling alone.  The p(X) offset is therefore the
-    larger of the two, and the excess must shrink as momentum rises and the
-    fractional energy loss falls.  Measured at 1 GeV/c: 4.4e-4 vs 3.3e-4.
+    They do NOT match exactly.  In the p(X) numerator, the extra 0.1 g/cm^2
+    of copper from the rounding also costs extra energy, lowering p through
+    the remainder of the path and raising theta_rms by more than the sqrt(X)
+    scaling alone.  The p(X) offset is therefore the LARGER of the two, and
+    the excess must shrink as momentum rises and the fractional energy loss
+    falls.  Measured at 1 GeV/c: ~4.4e-4 vs ~3.3e-4.
     """
     X = _areal(AXIAL)
     ratios = []
@@ -310,10 +306,8 @@ def test_pofx_mixed_bias_tracks_constant_p_case():
     assert all(1.0 <= q < 2.0 for q in ratios), ratios
     assert ratios[0] > ratios[-1], ratios
 
-# --------------------------------------------------------------------------
-# Exact constant-p API (eps_quadrature)
-# --------------------------------------------------------------------------
 
+# --------------------------------------------------------- exact constant-p API
 def test_exact_api_is_unbucketed():
     """eps_M_exact must vary smoothly with X, not in 0.25 g/cm^2 steps, and
     must equal the repo primitives computed directly."""
@@ -373,10 +367,7 @@ def test_marginal_shape_contract_unchanged():
     assert eps_M_marginal(np.array([1.0, 2.0, 3.5, 6.0])).shape == (4,)
 
 
-# --------------------------------------------------------------------------
-# Exact p(X) API (eps_quadrature_pofx)
-# --------------------------------------------------------------------------
-
+# --------------------------------------------------------- exact p(X) API
 def test_pofx_exact_api_matches_calibrate():
     """The exact p(X) wrappers must be transparent over energy_loss."""
     from eps_quadrature_pofx import (calibrate_exact, eps_M_mixed_exact,
@@ -418,6 +409,81 @@ def test_pofx_marginal_shape_and_pathological_momenta():
     assert np.all(bad == 0.0), bad
     # a 0.1 GeV/c muon cannot cross 161 g/cm^2; must return 0, not raise
     assert float(eps_M_marginal_pofx(0.1)[0]) == 0.0
+
+
+# --------------------------------------------------------- Section B: sampler
+def test_sampler_uses_pofx_accumulation():
+    """Section B: MoliereSampler._get must draw from the SAME (chi_c2, B)
+    energy_loss.accumulate_moliere gives at that bucket -- not from
+    ml.combine_path's constant-p values.
+
+    This requires moliere.py to have the Section B patch applied (its
+    _get method calling energy_loss.accumulate_moliere instead of
+    combine_path).  If this test fails with an attribute or import error,
+    the patch is not applied; if it fails on the numeric assertions, the
+    patch applied something other than what was specified.
+    """
+    key_p, key_al, key_cu, key_pb = 100, 108, 538, 0   # p=1.0, X_al=27.0,
+                                                        # X_cu=134.5, X_pb=0
+    p = key_p * P_CACHE_STEP
+    X_al = key_al * X_CACHE_STEP
+    X_cu = key_cu * X_CACHE_STEP
+
+    sampler = ml.MoliereSampler(nmax=2)
+    key = sampler._key(p, X_al, X_cu, 0.0)
+    assert key == (key_p, key_al, key_cu, key_pb), key
+    item = sampler._get(key)
+    assert item is not None, "sampler returned None for a valid path"
+    s, B, eta_grid, cdf = item
+    chi_c2_from_sampler = s * s / B
+
+    t_al = X_al / MATERIALS["Al"]["rho"]
+    t_cu = X_cu / MATERIALS["Cu"]["rho"]
+    slices, _ = el.slice_path(el.ordered_path(t_al, t_cu, 0.0), p)
+    chi_c2_want, _, B_want = el.accumulate_moliere(slices)
+
+    assert abs(chi_c2_from_sampler / chi_c2_want - 1.0) < 1e-9, (
+        chi_c2_from_sampler, chi_c2_want)
+    assert abs(B / B_want - 1.0) < 1e-9, (B, B_want)
+
+    # Must differ from the OLD constant-p value -- confirms the patch
+    # actually took effect rather than silently falling through to
+    # combine_path.  1 GeV/c through 161 g/cm^2 loses ~25% of its momentum,
+    # so this difference must be large, not a rounding-level discrepancy.
+    c2_old, a2_old = ml.combine_path(X_al, X_cu, 0.0, p)
+    rel_diff = abs(chi_c2_from_sampler / c2_old - 1.0)
+    assert rel_diff > 0.05, (
+        f"sampler chi_c2 differs from the constant-p value by only "
+        f"{rel_diff:.2e}; Section B patch does not appear to be active "
+        f"(chi_c2_sampler={chi_c2_from_sampler}, chi_c2_constp={c2_old})")
+
+
+def test_sampler_pofx_reduces_to_constant_p_when_loss_disabled():
+    """With energy loss switched off, the patched sampler must reproduce the
+    OLD constant-p (chi_c2, B) exactly -- the Section B reduction check,
+    at the sampler level rather than the calibration level."""
+    real = el.energy_after
+    try:
+        el.energy_after = lambda E, m, X: E
+        p = 1.0
+        X_al = MATERIALS["Al"]["rho"] * 10.0
+        X_cu = MATERIALS["Cu"]["rho"] * 15.0
+        sampler = ml.MoliereSampler(nmax=2)
+        key = sampler._key(p, X_al, X_cu, 0.0)
+        s, B, _, _ = sampler._get(key)
+        chi_c2 = s * s / B
+        # _key rounds to the cache grid; compare against combine_path on
+        # the SAME rounded values, not the raw ones.
+        X_al_r = key[1] * X_CACHE_STEP
+        X_cu_r = key[2] * X_CACHE_STEP
+        p_r = key[0] * P_CACHE_STEP
+        c2_want, a2_want = ml.combine_path(X_al_r, X_cu_r, 0.0, p_r)
+        B_want = ml.solve_B(c2_want, a2_want)
+        assert abs(chi_c2 / c2_want - 1.0) < 1e-9, (chi_c2, c2_want)
+        assert abs(B / B_want - 1.0) < 1e-9, (B, B_want)
+    finally:
+        el.energy_after = real
+
 
 def _self_check_registry():
     import ast as _ast
