@@ -28,12 +28,23 @@ import pandas as pd
 from scipy.optimize import curve_fit
 from scipy.special import erfc
 
-from config import (CU_ROI_R, CU_ROI_ZHALF, MIN_VOX_COUNT, MOMENTA, N_VOX,
-                    OUT_DIR, PB_CX, PB_CY, PB_ROI_R, PB_ROI_ZHALF, VOX_HALF,
-                    VOX_SIZE)
+from config import (
+    CU_ROI_R,
+    CU_ROI_ZHALF,
+    MIN_VOX_COUNT,
+    MOMENTA,
+    N_VOX,
+    OUT_DIR,
+    PB_CX,
+    PB_CY,
+    PB_ROI_R,
+    PB_ROI_ZHALF,
+    VOX_HALF,
+    VOX_SIZE,
+)
 from kinematics import theta_space_highland
 
-EDGE_Z_BAND = 5.0   # cm, half-width of the z band the radial profile averages
+EDGE_Z_BAND = 5.0  # cm, half-width of the z band the radial profile averages
 
 EDGES = np.linspace(-VOX_HALF, VOX_HALF, N_VOX + 1)
 CENTERS = 0.5 * (EDGES[1:] + EDGES[:-1])
@@ -41,8 +52,10 @@ CENTERS = 0.5 * (EDGES[1:] + EDGES[:-1])
 
 # ------------------------------------------------------------------ data
 def load_combined(tag="moliere", momenta=MOMENTA):
-    dfs = [pd.read_parquet(os.path.join(OUT_DIR, f"events_{tag}_p{p:.1f}.parquet"))
-           for p in momenta]
+    dfs = [
+        pd.read_parquet(os.path.join(OUT_DIR, f"events_{tag}_p{p:.1f}.parquet"))
+        for p in momenta
+    ]
     df = pd.concat(dfs, ignore_index=True)
     return df[df.pass_reco].copy()
 
@@ -71,7 +84,7 @@ def voxelise(df, w=None):
     if w is None:
         return counts, counts, counts
     sw, _ = np.histogramdd(sample, bins=bins, weights=w)
-    sw2, _ = np.histogramdd(sample, bins=bins, weights=w ** 2)
+    sw2, _ = np.histogramdd(sample, bins=bins, weights=w**2)
     return sw, sw2, counts
 
 
@@ -111,9 +124,14 @@ def metrics(img, sw2=None, counts=None, n_boot=200, rng=None):
         a = vpb[rng.integers(0, vpb.size, vpb.size)]
         b = vcu[rng.integers(0, vcu.size, vcu.size)]
         snrs[i], cnrs[i] = _m(a, b)
-    out = dict(SNR_Pb=snr, SNR_Pb_err=snrs.std(ddof=1),
-               CNR=cnr, CNR_err=cnrs.std(ddof=1),
-               n_pb_vox=int(pb.sum()), n_cu_vox=int(cu.sum()))
+    out = dict(
+        SNR_Pb=snr,
+        SNR_Pb_err=snrs.std(ddof=1),
+        CNR=cnr,
+        CNR_err=cnrs.std(ddof=1),
+        n_pb_vox=int(pb.sum()),
+        n_cu_vox=int(cu.sum()),
+    )
     if counts is not None:
         # An unlit ROI makes SNR/CNR meaningless; surface it rather than
         # quietly reporting a number computed over mostly-zero voxels.
@@ -147,7 +165,7 @@ def edge_response(img, counts=None):
     """
     from config import CU_HALF
 
-    r_max = CU_HALF - np.hypot(PB_CX, PB_CY)      # 3.89 cm: stays inside Cu
+    r_max = CU_HALF - np.hypot(PB_CX, PB_CY)  # 3.89 cm: stays inside Cu
     X, Y, Z = _grid_xyz()
     r = np.hypot(X - PB_CX, Y - PB_CY)
     band = np.abs(Z) <= EDGE_Z_BAND
@@ -175,11 +193,12 @@ def edge_response(img, counts=None):
         return dict(fail, edge_fit_status="no contrast across the boundary")
 
     p0 = [inner - outer, outer, PB_ROI_R, 0.5]
-    bounds = ([-np.inf, -np.inf, 0.5 * PB_ROI_R, 0.05],
-              [np.inf, np.inf, 1.5 * PB_ROI_R, 0.5 * r_max])
+    bounds = (
+        [-np.inf, -np.inf, 0.5 * PB_ROI_R, 0.05],
+        [np.inf, np.inf, 1.5 * PB_ROI_R, 0.5 * r_max],
+    )
     try:
-        popt, pcov = curve_fit(_erf_edge, rc, val, p0=p0,
-                               bounds=bounds, maxfev=20000)
+        popt, pcov = curve_fit(_erf_edge, rc, val, p0=p0, bounds=bounds, maxfev=20000)
     except Exception as exc:
         return dict(fail, edge_fit_status=f"{type(exc).__name__}: {exc}")
 
@@ -196,8 +215,9 @@ def edge_response(img, counts=None):
     if not np.isfinite(err) or err >= sig:
         return dict(fail, edge_fit_status="unstable sigma covariance")
 
-    return dict(sigma_PSF=sig, sigma_PSF_err=err, edge_10_90=2.56 * sig,
-                edge_fit_status="ok")
+    return dict(
+        sigma_PSF=sig, sigma_PSF_err=err, edge_10_90=2.56 * sig, edge_fit_status="ok"
+    )
 
 
 # ------------------------------------------------------------------ artifact map
@@ -231,8 +251,8 @@ def run_branch_b():
     df = load_combined("moliere")
 
     w_nom = weight(df, eps_fn=None)
-    w_bias = weight_biased(df, eps_fn)          # Sec. 4.3 injection
-    w_corr = weight(df, eps_fn=eps_fn)          # Eq. (13)
+    w_bias = weight_biased(df, eps_fn)  # Sec. 4.3 injection
+    w_corr = weight(df, eps_fn=eps_fn)  # Eq. (13)
 
     img_unw, _, counts = voxelise(df, None)
     img_nom, sw2_nom, _ = voxelise(df, w_nom)
@@ -240,16 +260,31 @@ def run_branch_b():
     img_corr, sw2_corr, _ = voxelise(df, w_corr)
 
     rows = []
-    for name, img in [("unweighted", img_unw), ("nominal", img_nom),
-                      ("biased", img_bias), ("corrected", img_corr)]:
+    for name, img in [
+        ("unweighted", img_unw),
+        ("nominal", img_nom),
+        ("biased", img_bias),
+        ("corrected", img_corr),
+    ]:
         m = metrics(img, counts=counts)
         m.update(edge_response(img, counts=counts))
         m["image"] = name
         rows.append(m)
-    res = pd.DataFrame(rows)[["image", "SNR_Pb", "SNR_Pb_err", "CNR", "CNR_err",
-                              "sigma_PSF", "sigma_PSF_err", "edge_10_90",
-                              "pb_empty_frac", "cu_empty_frac",
-                              "edge_fit_status"]]
+    res = pd.DataFrame(rows)[
+        [
+            "image",
+            "SNR_Pb",
+            "SNR_Pb_err",
+            "CNR",
+            "CNR_err",
+            "sigma_PSF",
+            "sigma_PSF_err",
+            "edge_10_90",
+            "pb_empty_frac",
+            "cu_empty_frac",
+            "edge_fit_status",
+        ]
+    ]
     res.to_csv(os.path.join(OUT_DIR, "branch_b_metrics.csv"), index=False)
 
     d_bias, mask = artifact_map(img_bias, img_nom, counts)
@@ -258,10 +293,18 @@ def run_branch_b():
 
     np.savez_compressed(
         os.path.join(OUT_DIR, "images.npz"),
-        unweighted=img_unw, nominal=img_nom, biased=img_bias,
-        corrected=img_corr, counts=counts, sw2_nom=sw2_nom,
-        sw2_corr=sw2_corr, d_bias=d_bias, d_corr=d_corr, pmap=pmap,
-        mask=mask, centers=CENTERS,
+        unweighted=img_unw,
+        nominal=img_nom,
+        biased=img_bias,
+        corrected=img_corr,
+        counts=counts,
+        sw2_nom=sw2_nom,
+        sw2_corr=sw2_corr,
+        d_bias=d_bias,
+        d_corr=d_corr,
+        pmap=pmap,
+        mask=mask,
+        centers=CENTERS,
     )
 
     summary = dict(
@@ -287,6 +330,7 @@ def weight_biased(df, eps_fn):
 # per-setting diagnostic images (momentum-driven bias -> near-global rescale)
 def run_per_setting():
     from branch_a import eps_M_of
+
     a, b = np.load(os.path.join(OUT_DIR, "eps_M_fit.npy"))
     eps_fn = lambda p: eps_M_of(p, a, b)
     out = {}

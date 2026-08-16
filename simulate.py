@@ -22,11 +22,25 @@ import os
 import numpy as np
 import pandas as pd
 
-from config import (BEAM_MODE, BL, MOM_BITE, N_PER_SETTING, OUT_DIR,
-                    RASTER_HALF, RASTER_NX, RASTER_NY, SEED_BASE,
-                    STEER_COMPENSATION,
-                    SIGMA_DIV, SIGMA_HIT, SIGMA_XY, STATION_Z, THETA_CUT,
-                    UNIFORM_HALF, Z_MAGNET_CM)
+from config import (
+    BEAM_MODE,
+    BL,
+    MOM_BITE,
+    N_PER_SETTING,
+    OUT_DIR,
+    RASTER_HALF,
+    RASTER_NX,
+    RASTER_NY,
+    SEED_BASE,
+    STEER_COMPENSATION,
+    SIGMA_DIV,
+    SIGMA_HIT,
+    SIGMA_XY,
+    STATION_Z,
+    THETA_CUT,
+    UNIFORM_HALF,
+    Z_MAGNET_CM,
+)
 from geometry import areal_densities, trace_ref, trace_true, x_over_X0
 from kinematics import theta0_highland
 from moliere import MoliereSampler
@@ -57,8 +71,9 @@ def _poca(p1, d1, p2, d2):
     return 0.5 * (c1 + c2)
 
 
-def simulate_setting(p_set, n=N_PER_SETTING, mode="moliere", seed_offset=0,
-                     sampler=None):
+def simulate_setting(
+    p_set, n=N_PER_SETTING, mode="moliere", seed_offset=0, sampler=None
+):
     rng = np.random.default_rng(SEED_BASE + int(p_set * 1000) + seed_offset)
 
     # ---------------------------------------------------------- 1. beam
@@ -77,21 +92,21 @@ def simulate_setting(p_set, n=N_PER_SETTING, mode="moliere", seed_offset=0,
         # so exposure is exactly uniform across nodes even at modest n).
         cx = np.linspace(-RASTER_HALF, RASTER_HALF, RASTER_NX)
         cy = np.linspace(-RASTER_HALF, RASTER_HALF, RASTER_NY)
-        nodes = np.array([(a, b) for a in cx for b in cy])   # (RASTER_NX*RASTER_NY, 2)
+        nodes = np.array([(a, b) for a in cx for b in cy])  # (RASTER_NX*RASTER_NY, 2)
         node_idx = np.arange(n) % nodes.shape[0]
-        rng.shuffle(node_idx)                                  # decorrelate from hit order
+        rng.shuffle(node_idx)  # decorrelate from hit order
         centers = nodes[node_idx]
         x0 = centers[:, 0] + rng.normal(0.0, SIGMA_XY, n)
         y0 = centers[:, 1] + rng.normal(0.0, SIGMA_XY, n)
     else:
         raise ValueError(f"unknown BEAM_MODE {BEAM_MODE!r}")
-    tx0 = rng.normal(0.0, SIGMA_DIV, n)     # slope dx/dz, pre-magnet
+    tx0 = rng.normal(0.0, SIGMA_DIV, n)  # slope dx/dz, pre-magnet
     ty0 = rng.normal(0.0, SIGMA_DIV, n)
     p_true = p_set * (1.0 + MOM_BITE * rng.normal(0.0, 1.0, n))
 
     # ---------------------------------------------------------- 2. spectrometer
     # true trajectory: straight to magnet centre, kick in x, straight on.
-    delta_true = 0.3 * BL / p_true          # rad, Eq. (5)
+    delta_true = 0.3 * BL / p_true  # rad, Eq. (5)
     if STEER_COMPENSATION == "per_setting":
         # Retune the beamline for this setting: shift the incoming beam so the
         # NOMINAL momentum lands on axis. Events off nominal (momentum bite)
@@ -111,8 +126,8 @@ def simulate_setting(p_set, n=N_PER_SETTING, mode="moliere", seed_offset=0,
 
     xm = x_at(Z_MAGNET_CM)
     ym = y_at(Z_MAGNET_CM)
-    tx1 = tx0 + delta_true                  # post-magnet true slope (x)
-    ty1 = ty0                               # no bend in y
+    tx1 = tx0 + delta_true  # post-magnet true slope (x)
+    ty1 = ty0  # no bend in y
 
     h3x = _propagate(xm, tx1, Z_MAGNET_CM, z3)
     h4x = _propagate(xm, tx1, Z_MAGNET_CM, z4)
@@ -127,20 +142,25 @@ def simulate_setting(p_set, n=N_PER_SETTING, mode="moliere", seed_offset=0,
     # ---------------------------------------------------------- 3. momentum tag
     th_pre = _slope(z1, z2, m1x, m2x)
     th_post = _slope(z3, z4, m3x, m4x)
-    delta_meas = th_post - th_pre                       # Eq. (6)
-    p_meas = 0.3 * BL / np.abs(delta_meas)              # Eq. (5) inverted
+    delta_meas = th_post - th_pre  # Eq. (6)
+    p_meas = 0.3 * BL / np.abs(delta_meas)  # Eq. (5) inverted
 
     # reconstructed incoming track (stations 3-4)
     tx_in = th_post
     ty_in = _slope(z3, z4, m3y, m4y)
-    x_in = m3x + tx_in * (0.0 - z3)                     # in-track x at z=0
+    x_in = m3x + tx_in * (0.0 - z3)  # in-track x at z=0
     y_in = m3y + ty_in * (0.0 - z3)
 
     # ---------------------------------------------------------- 4. path lengths
     # TRUE trajectory (for sampling + Branch A prediction)
-    o_true = np.stack([_propagate(xm, tx1, Z_MAGNET_CM, 0.0),
-                       _propagate(ym, ty1, Z_MAGNET_CM, 0.0),
-                       np.zeros(n)], axis=1)
+    o_true = np.stack(
+        [
+            _propagate(xm, tx1, Z_MAGNET_CM, 0.0),
+            _propagate(ym, ty1, Z_MAGNET_CM, 0.0),
+            np.zeros(n),
+        ],
+        axis=1,
+    )
     u_true = np.stack([tx1, ty1, np.ones(n)], axis=1)
     u_true /= np.linalg.norm(u_true, axis=1, keepdims=True)
     tAl, tCu, tPb = trace_true(o_true, u_true)
@@ -159,7 +179,9 @@ def simulate_setting(p_set, n=N_PER_SETTING, mode="moliere", seed_offset=0,
     u_rec /= np.linalg.norm(u_rec, axis=1, keepdims=True)
     rAl, rCu, rPb = trace_ref(o_rec, u_rec)
     xx0_ref = x_over_X0(rAl, rCu, rPb)
-    X_al_ref, X_cu_ref, X_pb_ref = areal_densities(rAl, rCu, rPb)  # X_pb_ref == 0 always
+    X_al_ref, X_cu_ref, X_pb_ref = areal_densities(
+        rAl, rCu, rPb
+    )  # X_pb_ref == 0 always
 
     # ---------------------------------------------------------- 5. scatter
     hit_target = xx0_true > 0.0
@@ -177,14 +199,14 @@ def simulate_setting(p_set, n=N_PER_SETTING, mode="moliere", seed_offset=0,
     else:
         raise ValueError(mode)
 
-    dth_true = np.sqrt(thx ** 2 + thy ** 2)
+    dth_true = np.sqrt(thx**2 + thy**2)
 
     # kink applied at the midpoint of the in-target path
     # (entry point + half the traversed length along u_true)
     L_tot = tAl + tCu + tPb
     # entry parameter: find where the ray enters the Al cube
     # (re-derive cheaply: PoCA-truth vertex only needs to be inside the target)
-    z_vtx = np.zeros(n)      # target is centred at z=0; midpoint ~ z=0 for
+    z_vtx = np.zeros(n)  # target is centred at z=0; midpoint ~ z=0 for
     # near-axial beams. Exact entry-point solve is in geometry._box_path;
     # for the small divergence here the z=0 midpoint is accurate to <1 mm.
     x_vtx = o_true[:, 0]
@@ -206,34 +228,43 @@ def simulate_setting(p_set, n=N_PER_SETTING, mode="moliere", seed_offset=0,
     dth_reco = np.sqrt((tx_out - tx_in) ** 2 + (ty_out - ty_in) ** 2)
 
     # ---------------------------------------------------------- 7. PoCA
-    p_up = np.stack([m3x + tx_in * (0.0 - z3),
-                     m3y + ty_in * (0.0 - z3),
-                     np.zeros(n)], axis=1)
+    p_up = np.stack(
+        [m3x + tx_in * (0.0 - z3), m3y + ty_in * (0.0 - z3), np.zeros(n)], axis=1
+    )
     d_up = np.stack([tx_in, ty_in, np.ones(n)], axis=1)
-    p_dn = np.stack([m5x + tx_out * (0.0 - z5),
-                     m5y + ty_out * (0.0 - z5),
-                     np.zeros(n)], axis=1)
+    p_dn = np.stack(
+        [m5x + tx_out * (0.0 - z5), m5y + ty_out * (0.0 - z5), np.zeros(n)], axis=1
+    )
     d_dn = np.stack([tx_out, ty_out, np.ones(n)], axis=1)
     poca = _poca(p_up, d_up, p_dn, d_dn)
 
     # ---------------------------------------------------------- 8. table
-    df = pd.DataFrame(dict(
-        p_set=np.full(n, p_set),
-        p_true=p_true,
-        p_meas=p_meas,
-        delta_meas=delta_meas,
-        theta_x=thx,
-        theta_y=thy,
-        dth_true=dth_true,
-        dth_reco=dth_reco,
-        xx0_true=xx0_true,
-        xx0_ref=xx0_ref,
-        X_al_ref=X_al_ref, X_cu_ref=X_cu_ref, X_pb_ref=X_pb_ref,
-        X_al_ref_true=X_al_ref_true, X_cu_ref_true=X_cu_ref_true,
-        X_pb_ref_true=X_pb_ref_true,
-        t_Al=tAl, t_Cu=tCu, t_Pb=tPb,
-        poca_x=poca[:, 0], poca_y=poca[:, 1], poca_z=poca[:, 2],
-    ))
+    df = pd.DataFrame(
+        dict(
+            p_set=np.full(n, p_set),
+            p_true=p_true,
+            p_meas=p_meas,
+            delta_meas=delta_meas,
+            theta_x=thx,
+            theta_y=thy,
+            dth_true=dth_true,
+            dth_reco=dth_reco,
+            xx0_true=xx0_true,
+            xx0_ref=xx0_ref,
+            X_al_ref=X_al_ref,
+            X_cu_ref=X_cu_ref,
+            X_pb_ref=X_pb_ref,
+            X_al_ref_true=X_al_ref_true,
+            X_cu_ref_true=X_cu_ref_true,
+            X_pb_ref_true=X_pb_ref_true,
+            t_Al=tAl,
+            t_Cu=tCu,
+            t_Pb=tPb,
+            poca_x=poca[:, 0],
+            poca_y=poca[:, 1],
+            poca_z=poca[:, 2],
+        )
+    )
     df["pass_reco"] = df.dth_reco <= THETA_CUT
     df["pass_true"] = df.dth_true <= THETA_CUT
     return df
@@ -241,6 +272,7 @@ def simulate_setting(p_set, n=N_PER_SETTING, mode="moliere", seed_offset=0,
 
 def run(mode="moliere", tag=None, momenta=None):
     from config import MOMENTA
+
     momenta = momenta or MOMENTA
     tag = tag or mode
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -249,13 +281,18 @@ def run(mode="moliere", tag=None, momenta=None):
         df = simulate_setting(p, mode=mode, sampler=sampler)
         path = os.path.join(OUT_DIR, f"events_{tag}_p{p:.1f}.parquet")
         df.to_parquet(path, index=False)
-        print(f"[{tag}] p={p} GeV/c  N={len(df)}  "
-              f"pass={df.pass_reco.mean():.4f}  -> {path}")
+        print(
+            f"[{tag}] p={p} GeV/c  N={len(df)}  "
+            f"pass={df.pass_reco.mean():.4f}  -> {path}"
+        )
     if sampler is not None:
-        print(f"[{tag}] max clipped pdf fraction = {sampler.max_clipped:.3e} "
-              f"(must be << 1e-2; see moliere.py warning)")
+        print(
+            f"[{tag}] max clipped pdf fraction = {sampler.max_clipped:.3e} "
+            f"(must be << 1e-2; see moliere.py warning)"
+        )
 
 
 if __name__ == "__main__":
     import sys
+
     run(mode=sys.argv[1] if len(sys.argv) > 1 else "moliere")

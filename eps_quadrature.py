@@ -71,14 +71,16 @@ K_OPT = None
 _CUT_CACHE_STEP = 0.002  # rad, cache bucket for arbitrary per-event cuts
 
 # Axial reference path used by eps_M_marginal (manuscript Sec. IV A).
-_AXIAL_T_AL = 10.0   # cm
-_AXIAL_T_CU = 15.0   # cm
+_AXIAL_T_AL = 10.0  # cm
+_AXIAL_T_CU = 15.0  # cm
 
 
 def _x_over_x0(X_al, X_cu, X_pb):
-    return (X_al / MATERIALS["Al"]["rho"] / MATERIALS["Al"]["X0"]
-            + X_cu / MATERIALS["Cu"]["rho"] / MATERIALS["Cu"]["X0"]
-            + X_pb / MATERIALS["Pb"]["rho"] / MATERIALS["Pb"]["X0"])
+    return (
+        X_al / MATERIALS["Al"]["rho"] / MATERIALS["Al"]["X0"]
+        + X_cu / MATERIALS["Cu"]["rho"] / MATERIALS["Cu"]["X0"]
+        + X_pb / MATERIALS["Pb"]["rho"] / MATERIALS["Pb"]["X0"]
+    )
 
 
 def _theta_rms_radial(chi_c2, B, cut=THETA_CUT):
@@ -102,6 +104,7 @@ def _theta_rms_disc(chi_c2, chi_a2, B, cut=THETA_CUT, n=None):
 # EXACT (unbucketed) calibration -- for fixed reference paths
 # ==========================================================================
 
+
 def theta_RMS_exact(p, X_al, X_cu, X_pb, theta_cut=THETA_CUT, nmax=2):
     """Unbucketed radial acceptance-truncated RMS [rad].  Scalar, uncached.
 
@@ -109,8 +112,7 @@ def theta_RMS_exact(p, X_al, X_cu, X_pb, theta_cut=THETA_CUT, nmax=2):
     path.  See the module docstring for why theta_RMS() is not appropriate
     there.
     """
-    chi_c2, chi_a2 = ml.combine_path(float(X_al), float(X_cu), float(X_pb),
-                                     float(p))
+    chi_c2, chi_a2 = ml.combine_path(float(X_al), float(X_cu), float(X_pb), float(p))
     if chi_c2 <= 0.0:
         return 0.0
     B = ml.solve_B(chi_c2, chi_a2)
@@ -127,14 +129,12 @@ def eps_M_exact(p, X_al, X_cu, X_pb, theta_cut=THETA_CUT, nmax=2):
     tspace = float(theta_space_highland(float(p), xX0))
     if not (tspace > 0.0):
         return 0.0
-    return (theta_RMS_exact(p, X_al, X_cu, X_pb, theta_cut, nmax) / tspace
-            - 1.0)
+    return theta_RMS_exact(p, X_al, X_cu, X_pb, theta_cut, nmax) / tspace - 1.0
 
 
 def Fc_M4_exact(p, X_al, X_cu, X_pb, theta_cut=THETA_CUT, nmax=2):
     """Unbucketed (F_c, M_2, M_4) for a fixed path, Eqs. (12)-(14)."""
-    chi_c2, chi_a2 = ml.combine_path(float(X_al), float(X_cu), float(X_pb),
-                                     float(p))
+    chi_c2, chi_a2 = ml.combine_path(float(X_al), float(X_cu), float(X_pb), float(p))
     if chi_c2 <= 0.0:
         return 0.0, 0.0, 0.0
     B = ml.solve_B(chi_c2, chi_a2)
@@ -144,6 +144,7 @@ def Fc_M4_exact(p, X_al, X_cu, X_pb, theta_cut=THETA_CUT, nmax=2):
 # ==========================================================================
 # BUCKETED calibration -- for per-event, varying-path use
 # ==========================================================================
+
 
 @lru_cache(maxsize=16384)
 def _theta_rms_bucketed(p_key, X_al_key, X_cu_key, X_pb_key, cut_key):
@@ -181,13 +182,15 @@ def theta_RMS_at_cut(p, X_al, X_cu, X_pb, theta_cut):
     """
     (flat, shape) = _broadcast_inputs(p, X_al, X_cu, X_pb, theta_cut)
     p_f, al_f, cu_f, pb_f, cut_f = flat
-    keys = np.column_stack([
-        np.rint(p_f / P_CACHE_STEP).astype(np.int64),
-        np.rint(al_f / X_CACHE_STEP).astype(np.int64),
-        np.rint(cu_f / X_CACHE_STEP).astype(np.int64),
-        np.rint(pb_f / X_CACHE_STEP).astype(np.int64),
-        np.rint(cut_f / _CUT_CACHE_STEP).astype(np.int64),
-    ])
+    keys = np.column_stack(
+        [
+            np.rint(p_f / P_CACHE_STEP).astype(np.int64),
+            np.rint(al_f / X_CACHE_STEP).astype(np.int64),
+            np.rint(cu_f / X_CACHE_STEP).astype(np.int64),
+            np.rint(pb_f / X_CACHE_STEP).astype(np.int64),
+            np.rint(cut_f / _CUT_CACHE_STEP).astype(np.int64),
+        ]
+    )
     unique, inv = np.unique(keys, axis=0, return_inverse=True)
     vals = np.empty(unique.shape[0], dtype=float)
     for i, k in enumerate(unique):
@@ -225,6 +228,7 @@ def theta_space_corrected(p, X_al, X_cu, X_pb, theta_cut=THETA_CUT):
 # Acceptance efficiency and optimum (already unbucketed in X)
 # ==========================================================================
 
+
 def efficiency(p, X_al, X_cu, X_pb, k):
     """Manuscript efficiency eta=sqrt(F_c)*M2/sigma(theta^2).
 
@@ -233,8 +237,7 @@ def efficiency(p, X_al, X_cu, X_pb, k):
     assumed.  chi_c2/chi_a2 come from combine_path on the raw X, so this
     function carries no areal-density quantization.
     """
-    chi_c2, chi_a2 = ml.combine_path(float(X_al), float(X_cu), float(X_pb),
-                                     float(p))
+    chi_c2, chi_a2 = ml.combine_path(float(X_al), float(X_cu), float(X_pb), float(p))
     if chi_c2 <= 0.0:
         return 0.0
     B = ml.solve_B(chi_c2, chi_a2)
@@ -249,8 +252,9 @@ def efficiency(p, X_al, X_cu, X_pb, k):
 
 
 @lru_cache(maxsize=8192)
-def _optimal_k_bucketed(p_key, X_al_key, X_cu_key, X_pb_key,
-                        k_lo_milli=500, k_hi_milli=8000):
+def _optimal_k_bucketed(
+    p_key, X_al_key, X_cu_key, X_pb_key, k_lo_milli=500, k_hi_milli=8000
+):
     if X_al_key == 0 and X_cu_key == 0 and X_pb_key == 0:
         return 0.0
     p = p_key * P_CACHE_STEP
@@ -262,7 +266,8 @@ def _optimal_k_bucketed(p_key, X_al_key, X_cu_key, X_pb_key,
 
     res = minimize_scalar(
         lambda kval: -efficiency(p, X_al, X_cu, X_pb, kval),
-        bounds=(lo, hi), method="bounded",
+        bounds=(lo, hi),
+        method="bounded",
         options={"xatol": 2e-4},
     )
     if not res.success:
@@ -277,12 +282,14 @@ def optimal_k(p, X_al, X_cu, X_pb, bounds=(0.5, 8.0)):
         raise ValueError("bounds must satisfy 0 < low < high")
     (flat, shape) = _broadcast_inputs(p, X_al, X_cu, X_pb)
     p_f, al_f, cu_f, pb_f = flat
-    keys = np.column_stack([
-        np.rint(p_f / P_CACHE_STEP).astype(np.int64),
-        np.rint(al_f / X_CACHE_STEP).astype(np.int64),
-        np.rint(cu_f / X_CACHE_STEP).astype(np.int64),
-        np.rint(pb_f / X_CACHE_STEP).astype(np.int64),
-    ])
+    keys = np.column_stack(
+        [
+            np.rint(p_f / P_CACHE_STEP).astype(np.int64),
+            np.rint(al_f / X_CACHE_STEP).astype(np.int64),
+            np.rint(cu_f / X_CACHE_STEP).astype(np.int64),
+            np.rint(pb_f / X_CACHE_STEP).astype(np.int64),
+        ]
+    )
     unique, inv = np.unique(keys, axis=0, return_inverse=True)
     vals = np.empty(unique.shape[0], dtype=float)
     lo_m = int(round(lo * 1000))
@@ -297,7 +304,10 @@ def optimal_k_exact(p, X_al, X_cu, X_pb, bounds=(0.5, 8.0)):
     lo, hi = map(float, bounds)
     res = minimize_scalar(
         lambda kval: -efficiency(p, X_al, X_cu, X_pb, kval),
-        bounds=(lo, hi), method="bounded", options={"xatol": 2e-4})
+        bounds=(lo, hi),
+        method="bounded",
+        options={"xatol": 2e-4},
+    )
     if not res.success:
         raise RuntimeError(f"acceptance optimization failed: {res.message}")
     return float(res.x)
@@ -334,8 +344,8 @@ def optimal_cut(p, X_al, X_cu, X_pb, k_opt=None, bounds=(0.5, 8.0)):
 # Grid resolution is set so linear interpolation error is <1e-4 pp; see
 # _marginal_interp_error() and test_pofx.test_marginal_interpolant_accurate.
 
-_MARGINAL_P_LO = 0.15      # GeV/c
-_MARGINAL_P_HI = 200.0     # GeV/c
+_MARGINAL_P_LO = 0.15  # GeV/c
+_MARGINAL_P_HI = 200.0  # GeV/c
 _MARGINAL_N = 1500
 _MARGINAL_CACHE = {}
 
@@ -347,10 +357,8 @@ def _marginal_grid(theta_cut):
         return _MARGINAL_CACHE[key]
     X_al = MATERIALS["Al"]["rho"] * _AXIAL_T_AL
     X_cu = MATERIALS["Cu"]["rho"] * _AXIAL_T_CU
-    lnp = np.linspace(math.log(_MARGINAL_P_LO), math.log(_MARGINAL_P_HI),
-                      _MARGINAL_N)
-    eps = np.array([eps_M_exact(math.exp(v), X_al, X_cu, 0.0, theta_cut)
-                    for v in lnp])
+    lnp = np.linspace(math.log(_MARGINAL_P_LO), math.log(_MARGINAL_P_HI), _MARGINAL_N)
+    eps = np.array([eps_M_exact(math.exp(v), X_al, X_cu, 0.0, theta_cut) for v in lnp])
     _MARGINAL_CACHE[key] = (lnp, eps)
     return lnp, eps
 
@@ -383,8 +391,7 @@ def eps_M_marginal(p, theta_cut=THETA_CUT):
         X_cu = MATERIALS["Cu"]["rho"] * _AXIAL_T_CU
         for i in np.flatnonzero(outside):
             try:
-                out[i] = eps_M_exact(float(flat[i]), X_al, X_cu, 0.0,
-                                     theta_cut)
+                out[i] = eps_M_exact(float(flat[i]), X_al, X_cu, 0.0, theta_cut)
             except (ValueError, RuntimeError):
                 out[i] = 0.0
     return _compat_shape(out, shape)
@@ -400,32 +407,37 @@ def _marginal_interp_error(theta_cut=THETA_CUT, n_probe=400):
     rng = np.random.default_rng(0)
     ps = np.exp(rng.uniform(math.log(0.3), math.log(20.0), n_probe))
     got = eps_M_marginal(ps, theta_cut)
-    want = np.array([eps_M_exact(float(v), X_al, X_cu, 0.0, theta_cut)
-                     for v in ps])
+    want = np.array([eps_M_exact(float(v), X_al, X_cu, 0.0, theta_cut) for v in ps])
     return float(np.max(np.abs(got - want)) * 100.0)
 
 
 # ==========================================================================
 
+
 def verify_radial():
     """Axial reference-path calibration.  The EXACT column is Table I."""
     X_al = MATERIALS["Al"]["rho"] * _AXIAL_T_AL
     X_cu = MATERIALS["Cu"]["rho"] * _AXIAL_T_CU
-    print(f"{'p':>5} {'eps_M/% (exact)':>16} {'eps_M/% (bucketed)':>19} "
-          f"{'offset/pp':>10} {'k_opt':>9} {'eta_max':>9}")
+    print(
+        f"{'p':>5} {'eps_M/% (exact)':>16} {'eps_M/% (bucketed)':>19} "
+        f"{'offset/pp':>10} {'k_opt':>9} {'eta_max':>9}"
+    )
     for p in (1.0, 2.0, 3.5, 6.0):
         e_ex = eps_M_exact(p, X_al, X_cu, 0.0) * 100.0
         e_bk = float(eps_M(p, X_al, X_cu, 0.0)[0]) * 100.0
         k = optimal_k_exact(p, X_al, X_cu, 0.0)
-        print(f"{p:5.1f} {e_ex:16.3f} {e_bk:19.3f} {e_bk-e_ex:+10.4f} "
-              f"{k:9.4f} {efficiency(p, X_al, X_cu, 0.0, k):9.4f}")
+        print(
+            f"{p:5.1f} {e_ex:16.3f} {e_bk:19.3f} {e_bk - e_ex:+10.4f} "
+            f"{k:9.4f} {efficiency(p, X_al, X_cu, 0.0, k):9.4f}"
+        )
     print()
     print("EXACT is the manuscript quantity.  The bucketed column carries the")
-    print("X_CACHE_STEP quantization of the fixed reference path "
-          "(X_Cu 134.4 -> 134.5")
+    print("X_CACHE_STEP quantization of the fixed reference path (X_Cu 134.4 -> 134.5")
     print("g/cm^2) and is correct only for per-event, varying-path use.")
-    print(f"eps_M_marginal interpolation error: "
-          f"{_marginal_interp_error():.2e} pp (max over 0.3-20 GeV/c)")
+    print(
+        f"eps_M_marginal interpolation error: "
+        f"{_marginal_interp_error():.2e} pp (max over 0.3-20 GeV/c)"
+    )
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ These tests are deliberately biased toward closures that can catch a wrong
 physics implementation, not merely API/syntax regressions.  They remain fast
 enough to run before every production job.
 """
+
 from __future__ import annotations
 
 import math
@@ -15,16 +16,35 @@ from analysis import PATHS
 from config import MATERIALS, MOMENTA, RADIAL_ETA_MAX, THETA_CUT
 from geometry import trace_paths
 from physics import (
-    Layer, PofxCache, accumulate_moliere_pofx, beta_of, calibrate_pofx,
-    constant_calibration, constant_path_parameters, dedx_of_E, energy_after,
-    fit_log_asymptote, phi0, phi1, radial_moments, radial_tail_ratio, radial_total_mass,
-    reduced_parameters, theta0_highland, validate_stopping_minima,
+    Layer,
+    PofxCache,
+    accumulate_moliere_pofx,
+    beta_of,
+    calibrate_pofx,
+    constant_calibration,
+    constant_path_parameters,
+    dedx_of_E,
+    energy_after,
+    fit_log_asymptote,
+    phi0,
+    phi1,
+    radial_moments,
+    radial_tail_ratio,
+    radial_total_mass,
+    reduced_parameters,
+    theta0_highland,
+    validate_stopping_minima,
 )
 from simulation import (
-    momentum_fractions, nominal_target_offset_cm, raster_nodes, seed_entropy,
+    momentum_fractions,
+    nominal_target_offset_cm,
+    raster_nodes,
+    seed_entropy,
 )
 
 TESTS = []
+
+
 def test(fn):
     TESTS.append(fn)
     return fn
@@ -69,7 +89,7 @@ def reduced_identity_exact():
     for p in MOMENTA:
         r = constant_calibration(PATHS["AlCu"], p)
         assert abs((1 + r["epsilon"]) ** 2 - r["exact_ratio2"]) < 2e-12
-        assert abs(r["eta_cut"] - r["k"] / math.sqrt(2*r["R"]*r["B"])) < 1e-12
+        assert abs(r["eta_cut"] - r["k"] / math.sqrt(2 * r["R"] * r["B"])) < 1e-12
 
 
 @test
@@ -118,13 +138,13 @@ def radial_subtable_log_slope_is_consistent_with_rutherford():
 @test
 def phi0_gaussian_kernel_and_n0_moments():
     eta = np.array([0.0, 0.2, 1.0, 2.5, 5.0])
-    assert np.allclose(phi0(eta), 2.0*np.exp(-eta*eta), rtol=0, atol=2e-15)
+    assert np.allclose(phi0(eta), 2.0 * np.exp(-eta * eta), rtol=0, atol=2e-15)
     r = constant_calibration(PATHS["AlCu"], 2.0)
     s = math.sqrt(r["chi_c2"] * r["B"])
-    Fc, M2, M4 = radial_moments(r["chi_c2"], r["B"], 10*s, nmax=0)
+    Fc, M2, M4 = radial_moments(r["chi_c2"], r["B"], 10 * s, nmax=0)
     assert abs(Fc - 1.0) < 1e-10
     assert abs(M2 / s**2 - 1.0) < 2e-6
-    assert abs(M4 / (2*s**4) - 1.0) < 5e-6
+    assert abs(M4 / (2 * s**4) - 1.0) < 5e-6
     # Highland is a fitted core width rather than an identity with s, but the
     # two core scales should agree at the few-percent level for this reference.
     assert abs(s / r["theta_space"] - 1.0) < 0.05
@@ -147,7 +167,7 @@ def radial_normalization_clipping_and_absolute_tail():
     # Above the numerical table, separately check the absolute normalized tail.
     for eta in (50.0, 100.0):
         assert eta > RADIAL_ETA_MAX
-        ratio = radial_tail_ratio(eta*s, r["chi_c2"], r["B"], nmax=2)
+        ratio = radial_tail_ratio(eta * s, r["chi_c2"], r["B"], nmax=2)
         assert abs(ratio - 1.0) < 5e-3, (eta, ratio)
 
 
@@ -158,17 +178,17 @@ def segmented_screening_both_rules_reduce_to_serial_at_constant_p():
     slices = []
     for name, t in (("Al", 5.0), ("Cu", 15.0), ("Al", 5.0)):
         m = MATERIALS[name]
-        X = t*m.rho
-        slices.append(dict(material=name, X=X, thickness_cm=t,
-                           p=p, beta=b, pbeta=p*b))
-    X = {"Al": 10*MATERIALS["Al"].rho,
-         "Cu": 15*MATERIALS["Cu"].rho, "Pb": 0.0}
+        X = t * m.rho
+        slices.append(
+            dict(material=name, X=X, thickness_cm=t, p=p, beta=b, pbeta=p * b)
+        )
+    X = {"Al": 10 * MATERIALS["Al"].rho, "Cu": 15 * MATERIALS["Cu"].rho, "Pb": 0.0}
     q = constant_path_parameters(X, p)
     for mode in ("dchi_c2", "serial"):
         c2, a2, B = accumulate_moliere_pofx(slices, screening_weight=mode)
-        assert abs(c2/q["chi_c2"] - 1) < 1e-13
-        assert abs(a2/q["chi_a2"] - 1) < 1e-13
-        assert abs(B/q["B"] - 1) < 1e-13
+        assert abs(c2 / q["chi_c2"] - 1) < 1e-13
+        assert abs(a2 / q["chi_a2"] - 1) < 1e-13
+        assert abs(B / q["B"] - 1) < 1e-13
 
 
 @test
@@ -178,28 +198,29 @@ def pofx_screening_convention_spread_is_exposed():
     s = calibrate_pofx(path, 1.0, screening_weight="serial")
     assert d["screening_weight"] == "dchi_c2" and s["screening_weight"] == "serial"
     # They must differ under appreciable loss, but remain a small model spread.
-    spread_pp = 100*abs(d["epsilon_matched"] - s["epsilon_matched"])
+    spread_pp = 100 * abs(d["epsilon_matched"] - s["epsilon_matched"])
     assert 1e-3 < spread_pp < 0.5, spread_pp
 
 
 @test
 def range_table_matches_independent_RK4():
     def rk4(E0, material, X, n=12000):
-        h = X/n
+        h = X / n
         E = float(E0)
-        f = lambda e: -1e-3*dedx_of_E(e, material)  # GeV per g/cm^2
+        f = lambda e: -1e-3 * dedx_of_E(e, material)  # GeV per g/cm^2
         for _ in range(n):
             k1 = f(E)
-            k2 = f(E + 0.5*h*k1)
-            k3 = f(E + 0.5*h*k2)
-            k4 = f(E + h*k3)
-            E += h*(k1 + 2*k2 + 2*k3 + k4)/6.0
+            k2 = f(E + 0.5 * h * k1)
+            k3 = f(E + 0.5 * h * k2)
+            k4 = f(E + h * k3)
+            E += h * (k1 + 2 * k2 + 2 * k3 + k4) / 6.0
         return E
+
     E0 = math.hypot(1.0, 0.10566)
     for mat, X in (("Al", 27.0), ("Cu", 100.0), ("Pb", 50.0)):
         tab = energy_after(E0, mat, X)
         ref = rk4(E0, mat, X)
-        assert abs(tab-ref) < 2e-4, (mat, tab, ref, (tab-ref)*1000)
+        assert abs(tab - ref) < 2e-4, (mat, tab, ref, (tab - ref) * 1000)
 
 
 @test
@@ -227,26 +248,26 @@ def sampler_matches_quadrature_and_is_isotropic():
 
     # Acceptance closure against binomial counting uncertainty.
     fc_obs = float(keep.mean())
-    sig_fc = math.sqrt(r["Fc"]*(1-r["Fc"])/n)
-    assert abs(fc_obs-r["Fc"]) < 6*sig_fc + 5e-4, (fc_obs, r["Fc"], sig_fc)
+    sig_fc = math.sqrt(r["Fc"] * (1 - r["Fc"]) / n)
+    assert abs(fc_obs - r["Fc"]) < 6 * sig_fc + 5e-4, (fc_obs, r["Fc"], sig_fc)
 
     # Accepted M2 closure using the model's own fourth moment as the sampling
     # variance of theta^2; this has substantially more teeth than a fixed % cut.
-    q = th[keep]**2
+    q = th[keep] ** 2
     m2_obs = float(q.mean())
     nacc = int(keep.sum())
-    se_m2 = math.sqrt(max(r["M4"]-r["M2"]**2, 0.0)/nacc)
-    assert abs(m2_obs-r["M2"]) < 6*se_m2 + 0.003*r["M2"], (m2_obs, r["M2"], se_m2)
+    se_m2 = math.sqrt(max(r["M4"] - r["M2"] ** 2, 0.0) / nacc)
+    assert abs(m2_obs - r["M2"]) < 6 * se_m2 + 0.003 * r["M2"], (m2_obs, r["M2"], se_m2)
 
     # Azimuthal isotropy on the accepted sample.  Do not use the untruncated
     # formal Rutherford tail here: its heavy tail makes finite-sample component
     # variances unnecessarily unstable even when azimuth is exactly uniform.
     xa, ya = tx[keep], ty[keep]
     for v in (xa, ya):
-        assert abs(v.mean()) < 6*v.std(ddof=1)/math.sqrt(v.size)
+        assert abs(v.mean()) < 6 * v.std(ddof=1) / math.sqrt(v.size)
     vx, vy = np.var(xa, ddof=1), np.var(ya, ddof=1)
-    assert abs(vx/vy - 1.0) < 0.04, (vx, vy)
-    assert abs(np.mean(xa*ya)) < 0.03*math.sqrt(vx*vy)
+    assert abs(vx / vy - 1.0) < 0.04, (vx, vy)
+    assert abs(np.mean(xa * ya)) < 0.03 * math.sqrt(vx * vy)
 
 
 @test
@@ -259,7 +280,9 @@ def steering_modes_are_not_dead_config():
 
 @test
 def seed_entropy_unique_over_production_grid():
-    vals = [seed_entropy(p, tuple(xy), seed=0) for p in MOMENTA for xy in raster_nodes()]
+    vals = [
+        seed_entropy(p, tuple(xy), seed=0) for p in MOMENTA for xy in raster_nodes()
+    ]
     assert len(vals) == len(set(vals))
 
 
@@ -269,7 +292,7 @@ def gradient_fractions_normalized():
     f = momentum_fractions(x)
     assert np.allclose(f.sum(axis=1), 1.0)
     assert np.all(f >= 0)
-    assert f[0,0] > f[0,-1] and f[-1,-1] > f[-1,0]
+    assert f[0, 0] > f[0, -1] and f[-1, -1] > f[-1, 0]
 
 
 @test
@@ -288,7 +311,7 @@ def main():
         except Exception as e:
             bad += 1
             print("FAIL", fn.__name__, repr(e))
-    print(f"\n{len(TESTS)-bad}/{len(TESTS)} passed")
+    print(f"\n{len(TESTS) - bad}/{len(TESTS)} passed")
     return bad
 
 

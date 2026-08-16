@@ -34,11 +34,11 @@ RNG = np.random.default_rng(12345)
 def theta_pred(p, xx0):
     """Eq. (14): sqrt( mean( 2 * theta0^2(p_i, x/X0_i) ) )."""
     t0 = theta0_highland(p, xx0)
-    return np.sqrt(np.mean(2.0 * t0 ** 2))
+    return np.sqrt(np.mean(2.0 * t0**2))
 
 
 def theta_rms(dth):
-    return np.sqrt(np.mean(dth ** 2))
+    return np.sqrt(np.mean(dth**2))
 
 
 def residual(dth, p, xx0):
@@ -75,38 +75,51 @@ def branch_a(momenta=MOMENTA):
         m_true = mol[mol.pass_true]
         g_true = gau[gau.pass_true]
 
-        eps_full = residual(m_reco.dth_reco.values,
-                            m_reco.p_meas.values, m_reco.xx0_true.values)
-        eps_true_ang = residual(m_true.dth_true.values,
-                                m_true.p_meas.values, m_true.xx0_true.values)
-        eps_true_p = residual(m_true.dth_true.values,
-                              m_true.p_true.values, m_true.xx0_true.values)
-        eps_gauss = residual(g_true.dth_true.values,
-                             g_true.p_true.values, g_true.xx0_true.values)
+        eps_full = residual(
+            m_reco.dth_reco.values, m_reco.p_meas.values, m_reco.xx0_true.values
+        )
+        eps_true_ang = residual(
+            m_true.dth_true.values, m_true.p_meas.values, m_true.xx0_true.values
+        )
+        eps_true_p = residual(
+            m_true.dth_true.values, m_true.p_true.values, m_true.xx0_true.values
+        )
+        eps_gauss = residual(
+            g_true.dth_true.values, g_true.p_true.values, g_true.xx0_true.values
+        )
 
-        e_full = residual_boot(m_reco.dth_reco.values,
-                               m_reco.p_meas.values, m_reco.xx0_true.values)
-        e_tp = residual_boot(m_true.dth_true.values,
-                             m_true.p_true.values, m_true.xx0_true.values)
-        e_g = residual_boot(g_true.dth_true.values,
-                            g_true.p_true.values, g_true.xx0_true.values)
+        e_full = residual_boot(
+            m_reco.dth_reco.values, m_reco.p_meas.values, m_reco.xx0_true.values
+        )
+        e_tp = residual_boot(
+            m_true.dth_true.values, m_true.p_true.values, m_true.xx0_true.values
+        )
+        e_g = residual_boot(
+            g_true.dth_true.values, g_true.p_true.values, g_true.xx0_true.values
+        )
 
         eps_M = eps_true_p - eps_gauss
-        err_M = np.hypot(e_tp, e_g)   # bootstrap samples are independent runs
+        err_M = np.hypot(e_tp, e_g)  # bootstrap samples are independent runs
 
-        rows.append(dict(
-            p=p,
-            n_pass=len(m_reco),
-            eps_full=eps_full, eps_full_err=e_full,
-            eps_true_ang=eps_true_ang,
-            eps_true_p=eps_true_p, eps_true_p_err=e_tp,
-            eps_gauss=eps_gauss, eps_gauss_err=e_g,
-            noise=eps_full - eps_true_ang,
-            p_res=eps_true_ang - eps_true_p,
-            truncation=eps_gauss,
-            eps_M=eps_M, eps_M_err=err_M,
-            analytic_floor=analytic_floor(len(m_reco)),
-        ))
+        rows.append(
+            dict(
+                p=p,
+                n_pass=len(m_reco),
+                eps_full=eps_full,
+                eps_full_err=e_full,
+                eps_true_ang=eps_true_ang,
+                eps_true_p=eps_true_p,
+                eps_true_p_err=e_tp,
+                eps_gauss=eps_gauss,
+                eps_gauss_err=e_g,
+                noise=eps_full - eps_true_ang,
+                p_res=eps_true_ang - eps_true_p,
+                truncation=eps_gauss,
+                eps_M=eps_M,
+                eps_M_err=err_M,
+                analytic_floor=analytic_floor(len(m_reco)),
+            )
+        )
     df = pd.DataFrame(rows)
     df.to_csv(os.path.join(OUT_DIR, "branch_a.csv"), index=False)
     return df

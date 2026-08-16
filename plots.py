@@ -22,6 +22,7 @@ Plot one directory only::
 
     python plots_all.py --outdir out/production_analysis --kind images
 """
+
 from __future__ import annotations
 
 import argparse
@@ -33,6 +34,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -46,19 +48,21 @@ except Exception:
 # ---------------------------------------------------------------------------
 # Style
 
-plt.rcParams.update({
-    "font.family": "serif",
-    "font.serif": ["Computer Modern Roman", "DejaVu Serif", "Times New Roman"],
-    "mathtext.fontset": "cm",
-    "font.size": 10,
-    "axes.labelsize": 10,
-    "axes.titlesize": 10,
-    "xtick.labelsize": 9,
-    "ytick.labelsize": 9,
-    "legend.fontsize": 8,
-    "axes.linewidth": 0.8,
-    "savefig.dpi": 300,
-})
+plt.rcParams.update(
+    {
+        "font.family": "serif",
+        "font.serif": ["Computer Modern Roman", "DejaVu Serif", "Times New Roman"],
+        "mathtext.fontset": "cm",
+        "font.size": 10,
+        "axes.labelsize": 10,
+        "axes.titlesize": 10,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+        "legend.fontsize": 8,
+        "axes.linewidth": 0.8,
+        "savefig.dpi": 300,
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -204,10 +208,12 @@ def plot_theory(outdir: str | Path, figdir: Path):
 
     rp = reduced_parameters(PATHS["AlCu"], 1.0)
     eta = np.geomspace(2.0, 30.0, 200)
-    eps = np.array([
-        math.sqrt(rp["R"] * rp["B"] * mu2_eta(float(e), rp["B"], 2)) - 1.0
-        for e in eta
-    ])
+    eps = np.array(
+        [
+            math.sqrt(rp["R"] * rp["B"] * mu2_eta(float(e), rp["B"], 2)) - 1.0
+            for e in eta
+        ]
+    )
 
     fig, ax = plt.subplots(figsize=(4.5, 3.4))
     ax.plot(eta, 100 * eps, lw=1.6, label="Al+Cu reduced curve")
@@ -242,7 +248,7 @@ def plot_theory(outdir: str | Path, figdir: Path):
             g.eta1_joint.to_numpy(float),
             marker=marker,
             lw=1.1,
-            label=fr"$n\leq {nmax}$",
+            label=rf"$n\leq {nmax}$",
         )
     axes[0].axhline(1.0, lw=0.8, color="k")
     axes[0].set_xticks(xpos, paths)
@@ -258,7 +264,8 @@ def plot_theory(outdir: str | Path, figdir: Path):
         hi = g.eta_max.to_numpy(float)
         y = 100.0 * (g.slope_ratio.to_numpy(float) - 1.0)
         axes[1].errorbar(
-            x, y,
+            x,
+            y,
             xerr=np.vstack([x - lo, hi - x]),
             marker=marker,
             capsize=2,
@@ -266,7 +273,7 @@ def plot_theory(outdir: str | Path, figdir: Path):
             label=path,
         )
     eta0 = float(e.eta_table_max.iloc[0])
-    axes[1].axvline(eta0, lw=0.9, ls="--", color="k", label=fr"$\eta_0={eta0:g}$")
+    axes[1].axvline(eta0, lw=0.9, ls="--", color="k", label=rf"$\eta_0={eta0:g}$")
     axes[1].axhline(0.0, lw=0.8, color="k")
     axes[1].set_xscale("log")
     axes[1].set_xlim(7.0, eta0 * 1.08)
@@ -326,8 +333,12 @@ def plot_theory(outdir: str | Path, figdir: Path):
             axes[0].plot(alcu.p, 100.0 * alcu.dp_over_p, "o-")
             axes[0].set_xlabel(r"$p_{\rm in}$ (GeV/$c$)")
             axes[0].set_ylabel(r"$\Delta p/p$ (%)")
-            axes[1].plot(alcu.p, 100.0 * alcu.epsilon_matched_dchi, "o-", label="matched")
-            axes[1].plot(alcu.p, 100.0 * alcu.epsilon_mixed_dchi, "s-", label="upstream-tagged")
+            axes[1].plot(
+                alcu.p, 100.0 * alcu.epsilon_matched_dchi, "o-", label="matched"
+            )
+            axes[1].plot(
+                alcu.p, 100.0 * alcu.epsilon_mixed_dchi, "s-", label="upstream-tagged"
+            )
             axes[1].set_xlabel(r"$p_{\rm in}$ (GeV/$c$)")
             axes[1].set_ylabel(r"$\epsilon$ (%)")
             axes[1].legend(frameon=False)
@@ -418,10 +429,12 @@ def plot_images(
         ax.bar_label(bars, fmt="%.3f", padding=2, fontsize=8)
         ax.set_ylabel("image RMS difference")
         ax.text(
-            0.98, 0.96,
-            f"reduction = {100.0*a.p_reduction:.1f}%",
+            0.98,
+            0.96,
+            f"reduction = {100.0 * a.p_reduction:.1f}%",
             transform=ax.transAxes,
-            ha="right", va="top",
+            ha="right",
+            va="top",
         )
         fig.tight_layout()
         _save(fig, out, "artifact_summary", figdir)
@@ -479,10 +492,12 @@ def plot_gradient(outdir: str | Path, figdir: Path, percentile: float = 99.0):
         if not r.empty:
             row = r.iloc[0]
             axes[2].text(
-                0.03, 0.97,
-                f"r = {row.correlation:.3f}\nresidual = {100.0*row.residual_fraction:.1f}%",
+                0.03,
+                0.97,
+                f"r = {row.correlation:.3f}\nresidual = {100.0 * row.residual_fraction:.1f}%",
                 transform=axes[2].transAxes,
-                ha="left", va="top",
+                ha="left",
+                va="top",
                 fontsize=8,
                 bbox=dict(facecolor="white", alpha=0.75, edgecolor="none"),
             )
@@ -520,7 +535,9 @@ def plot_paired(csv_path: Path, figdir: Path):
 # CLI
 
 
-def run_all(root: Path, explicit_figdir: str | Path | None = None, percentile: float = 99.0):
+def run_all(
+    root: Path, explicit_figdir: str | Path | None = None, percentile: float = 99.0
+):
     root = root.resolve()
     figdir = _figdir(root, explicit_figdir)
 
@@ -528,12 +545,16 @@ def run_all(root: Path, explicit_figdir: str | Path | None = None, percentile: f
     image_dirs = _scan_dirs(root, "images.npz")
     gradient_dirs = _scan_dirs(root, "gradient_maps.npz")
 
-    nominal_vmax, p_vmax = image_scales(image_dirs, percentile=percentile) if image_dirs else (None, None)
+    nominal_vmax, p_vmax = (
+        image_scales(image_dirs, percentile=percentile) if image_dirs else (None, None)
+    )
 
     for d in theory_dirs:
         plot_theory(d, figdir)
     for d in image_dirs:
-        plot_images(d, figdir, nominal_vmax=nominal_vmax, p_vmax=p_vmax, percentile=percentile)
+        plot_images(
+            d, figdir, nominal_vmax=nominal_vmax, p_vmax=p_vmax, percentile=percentile
+        )
     for d in gradient_dirs:
         plot_gradient(d, figdir, percentile=percentile)
 
@@ -551,13 +572,25 @@ def run_all(root: Path, explicit_figdir: str | Path | None = None, percentile: f
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Generate centralized publication figures.")
+    ap = argparse.ArgumentParser(
+        description="Generate centralized publication figures."
+    )
     ap.add_argument("--root", default="out", help="results root; default: out")
-    ap.add_argument("--figdir", default=None, help="override figure directory; default: <root>/figs")
-    ap.add_argument("--all", action="store_true", help="scan the entire results tree and plot all unique runs")
+    ap.add_argument(
+        "--figdir", default=None, help="override figure directory; default: <root>/figs"
+    )
+    ap.add_argument(
+        "--all",
+        action="store_true",
+        help="scan the entire results tree and plot all unique runs",
+    )
     ap.add_argument("--outdir", default=None, help="plot one results directory")
-    ap.add_argument("--kind", choices=["theory", "images", "gradient", "all"], default="all")
-    ap.add_argument("--percentile", type=float, default=99.0, help="robust display scale percentile")
+    ap.add_argument(
+        "--kind", choices=["theory", "images", "gradient", "all"], default="all"
+    )
+    ap.add_argument(
+        "--percentile", type=float, default=99.0, help="robust display scale percentile"
+    )
     a = ap.parse_args()
 
     if a.all:

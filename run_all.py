@@ -27,6 +27,7 @@ def main():
 
     print("== stage 1: Gaussian control run (n=0) ==")
     import simulate
+
     simulate.run(mode="gauss")
 
     print("== stage 2: Moliere production run ==")
@@ -34,6 +35,7 @@ def main():
 
     print("== stage 3: Branch A ==")
     import branch_a
+
     dfa = branch_a.branch_a()
     print(dfa.to_string(index=False))
     a, b = branch_a.fit_eps_M(dfa)
@@ -43,6 +45,7 @@ def main():
 
     print("== stage 4/5: Branch B + correction ==")
     import branch_b
+
     res, summary = branch_b.run_branch_b()
     print(res.to_string(index=False))
     print(summary)

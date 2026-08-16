@@ -52,6 +52,7 @@ Al/2 -> Cu/2 -> Pb -> Cu/2 -> Al/2, which is exact for an axial ray through
 the concentric Al(25)/Cu(15)/Pb geometry of config.py and accurate to the
 beam divergence (SIGMA_DIV = 2 mrad) otherwise.  ASSUMPTION, flagged.
 """
+
 import math
 
 import numpy as np
@@ -69,17 +70,18 @@ MEV = 1e3
 # the exact continuous-slowing-down solution of dE/dX = -S and costs two
 # interpolations instead of an RK4 integration per call.
 
-_T_MIN = 1.0e-3          # GeV kinetic energy floor of the tables
-_T_MAX = 5.0e1           # GeV
+_T_MIN = 1.0e-3  # GeV kinetic energy floor of the tables
+_T_MAX = 5.0e1  # GeV
 _N_GRID = 6000
+
 
 def _build_range_table(material):
     T = np.geomspace(_T_MIN, _T_MAX, _N_GRID)
     E = T + M_MU
-    inv_S = np.array([1.0 / (dedx_of_E(float(e), material) * 1e-3)
-                      for e in E])                          # (g/cm^2) per GeV
-    R = np.concatenate([[0.0],
-                        np.cumsum(0.5 * (inv_S[1:] + inv_S[:-1]) * np.diff(E))])
+    inv_S = np.array(
+        [1.0 / (dedx_of_E(float(e), material) * 1e-3) for e in E]
+    )  # (g/cm^2) per GeV
+    R = np.concatenate([[0.0], np.cumsum(0.5 * (inv_S[1:] + inv_S[:-1]) * np.diff(E))])
     return E, R
 
 
@@ -92,8 +94,9 @@ def energy_after(E_in, material, X):
     R_in = float(np.interp(E_in, E_grid, R_grid))
     R_out = R_in - float(X)
     if R_out <= R_grid[0]:
-        raise RuntimeError(f"muon stopped in {material}: R_in={R_in:.2f} "
-                           f"g/cm^2 < X={X:.2f} g/cm^2")
+        raise RuntimeError(
+            f"muon stopped in {material}: R_in={R_in:.2f} g/cm^2 < X={X:.2f} g/cm^2"
+        )
     return float(np.interp(R_out, R_grid, E_grid))
 
 
@@ -161,9 +164,16 @@ def slice_path(path, p_in, tol=0.01, max_slices=2000):
             w = (dX / 6.0) * (1.0 / q0**2 + 4.0 / qm**2 + 1.0 / q1**2)
             q_rep = math.sqrt(dX / w)
             p_rep = _p_of_pbeta(q_rep)
-            slices.append(dict(mat=name, X=dX,
-                               dx=dX / MATERIALS[name]["rho"],
-                               pb=q_rep, p=p_rep, beta=q_rep / p_rep))
+            slices.append(
+                dict(
+                    mat=name,
+                    X=dX,
+                    dx=dX / MATERIALS[name]["rho"],
+                    pb=q_rep,
+                    p=p_rep,
+                    beta=q_rep / p_rep,
+                )
+            )
             E = E1
     return slices, E
 
@@ -195,7 +205,7 @@ def highland_pofx(slices, xx0_total):
     b2 = 0.0
     for s in slices:
         xj = s["dx"] / MATERIALS[s["mat"]]["X0"]
-        core2 += (13.6 ** 2) * xj / (s["pb"] * MEV) ** 2
+        core2 += (13.6**2) * xj / (s["pb"] * MEV) ** 2
         w = xj / s["pb"] ** 2
         b2 += w * s["beta"] ** 2
         wsum += w
@@ -240,23 +250,39 @@ def calibrate(t_al, t_cu, t_pb, p_in, theta_cut=THETA_CUT, tol=0.01, nmax=2):
     th_space_0 = float(theta_space_highland(p_in, xx0))
 
     return dict(
-        p_in=p_in, p_out=p_out, dp_over_p=p_out / p_in - 1.0,
+        p_in=p_in,
+        p_out=p_out,
+        dp_over_p=p_out / p_in - 1.0,
         dE=math.hypot(p_in, M_MU) - E_out,
-        mass=X_al + X_cu + X_pb, xx0=xx0, n_slices=len(slices),
-        chi_c2=chi_c2, chi_a2=chi_a2, B=B,
+        mass=X_al + X_cu + X_pb,
+        xx0=xx0,
+        n_slices=len(slices),
+        chi_c2=chi_c2,
+        chi_a2=chi_a2,
+        B=B,
         Omega0=chi_c2 / (1.167 * chi_a2),
-        Fc=Fc, M2=M2, M4=M4, th_rms=th_rms,
-        th0=th0_pX, th_space=th_space_pX, beta_eff=beta_eff,
+        Fc=Fc,
+        M2=M2,
+        M4=M4,
+        th_rms=th_rms,
+        th0=th0_pX,
+        th_space=th_space_pX,
+        beta_eff=beta_eff,
         k=float(theta_cut) / th0_pX,
         eps_M=th_rms / th_space_pX - 1.0,
         # deployed estimator: numerator on p(X), denominator at the tagged p_in
         eps_mix=th_rms / th_space_0 - 1.0,
         # constant-p baseline (what Table I currently reports)
-        chi_c2_0=c2_0, B_0=B0, Fc_0=Fc0, M4_0=M4_0,
-        th_rms_0=th_rms_0, th_space_0=th_space_0,
+        chi_c2_0=c2_0,
+        B_0=B0,
+        Fc_0=Fc0,
+        M4_0=M4_0,
+        th_rms_0=th_rms_0,
+        th_space_0=th_space_0,
         k_0=float(theta_cut) / (th_space_0 / math.sqrt(2.0)),
         eps_M_0=th_rms_0 / th_space_0 - 1.0,
-        slices=slices)
+        slices=slices,
+    )
 
 
 def efficiency_pofx(t_al, t_cu, t_pb, p_in, k, tol=0.01):
@@ -274,9 +300,13 @@ def efficiency_pofx(t_al, t_cu, t_pb, p_in, k, tol=0.01):
 
 def optimal_k_pofx(t_al, t_cu, t_pb, p_in, bounds=(0.5, 8.0)):
     from scipy.optimize import minimize_scalar
+
     r = minimize_scalar(
         lambda k: -efficiency_pofx(t_al, t_cu, t_pb, p_in, k),
-        bounds=bounds, method="bounded", options={"xatol": 2e-4})
+        bounds=bounds,
+        method="bounded",
+        options={"xatol": 2e-4},
+    )
     if not r.success:
         raise RuntimeError(r.message)
     k = float(r.x)

@@ -9,6 +9,7 @@ Recommended manuscript mode::
 This produces only the canonical theory, production, gradient, and paired-seed
 figures.  ``--all`` remains available for convergence/seed diagnostics.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -20,6 +21,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FixedLocator, FixedFormatter, NullFormatter
@@ -27,8 +29,12 @@ from matplotlib.patches import Circle, Rectangle, Patch
 
 try:
     from config import (
-        MIN_VOX_COUNT, VOX_HALF, CU_HALF,
-        PB_CX, PB_CY, PB_ROI_R,
+        MIN_VOX_COUNT,
+        VOX_HALF,
+        CU_HALF,
+        PB_CX,
+        PB_CY,
+        PB_ROI_R,
     )
 except Exception:
     MIN_VOX_COUNT = 20
@@ -42,20 +48,22 @@ except Exception:
 # ---------------------------------------------------------------------------
 # Journal style and consistent semantic colors
 
-plt.rcParams.update({
-    "font.family": "serif",
-    "font.serif": ["Computer Modern Roman", "DejaVu Serif", "Times New Roman"],
-    "mathtext.fontset": "cm",
-    "font.size": 10,
-    "axes.labelsize": 10,
-    "axes.titlesize": 10,
-    "xtick.labelsize": 9,
-    "ytick.labelsize": 9,
-    "legend.fontsize": 8,
-    "axes.linewidth": 0.8,
-    "lines.linewidth": 1.35,
-    "savefig.dpi": 300,
-})
+plt.rcParams.update(
+    {
+        "font.family": "serif",
+        "font.serif": ["Computer Modern Roman", "DejaVu Serif", "Times New Roman"],
+        "mathtext.fontset": "cm",
+        "font.size": 10,
+        "axes.labelsize": 10,
+        "axes.titlesize": 10,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+        "legend.fontsize": 8,
+        "axes.linewidth": 0.8,
+        "lines.linewidth": 1.35,
+        "savefig.dpi": 300,
+    }
+)
 
 PATH_ORDER = ["Al25", "Cu15", "AlCu", "Pb15"]
 PATH_LABEL = {
@@ -75,8 +83,16 @@ PATH_MARKER = {"Al25": "o", "Cu15": "^", "AlCu": "s", "Pb15": "D"}
 
 
 def _panel(ax, letter: str):
-    ax.text(-0.11, 1.04, f"({letter})", transform=ax.transAxes,
-            ha="left", va="bottom", fontweight="bold", fontsize=10)
+    ax.text(
+        -0.11,
+        1.04,
+        f"({letter})",
+        transform=ax.transAxes,
+        ha="left",
+        va="bottom",
+        fontweight="bold",
+        fontsize=10,
+    )
 
 
 def _diverging_cmap():
@@ -145,7 +161,9 @@ def _dedupe_dirs(dirs: list[Path], filename: str) -> list[Path]:
         f = d / filename
         if f.exists():
             groups.setdefault(_sha256(f), []).append(d)
-    return sorted((max(g, key=_preference_score) for g in groups.values()), key=lambda p: p.name)
+    return sorted(
+        (max(g, key=_preference_score) for g in groups.values()), key=lambda p: p.name
+    )
 
 
 def _scan_dirs(root: Path, filename: str) -> list[Path]:
@@ -202,14 +220,20 @@ def image_scales(dirs: list[Path], percentile: float = 99.0) -> tuple[float, flo
 
 def _add_target_overlay(ax):
     # Cu is a cube: use its projected square, not a circular proxy.
-    ax.add_patch(Rectangle(
-        (-CU_HALF, -CU_HALF), 2 * CU_HALF, 2 * CU_HALF,
-        fill=False, edgecolor="0.35", lw=0.75, ls=":"
-    ))
-    ax.add_patch(Circle(
-        (PB_CX, PB_CY), PB_ROI_R,
-        fill=False, edgecolor="0.25", lw=0.8, ls="--"
-    ))
+    ax.add_patch(
+        Rectangle(
+            (-CU_HALF, -CU_HALF),
+            2 * CU_HALF,
+            2 * CU_HALF,
+            fill=False,
+            edgecolor="0.35",
+            lw=0.75,
+            ls=":",
+        )
+    )
+    ax.add_patch(
+        Circle((PB_CX, PB_CY), PB_ROI_R, fill=False, edgecolor="0.25", lw=0.8, ls="--")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -225,23 +249,35 @@ def plot_theory(outdir: str | Path, figdir: Path):
 
     rp = reduced_parameters(PATHS["AlCu"], 1.0)
     eta = np.geomspace(2.0, 30.0, 250)
-    eps = np.array([
-        math.sqrt(rp["R"] * rp["B"] * mu2_eta(float(e), rp["B"], 2)) - 1.0
-        for e in eta
-    ])
+    eps = np.array(
+        [
+            math.sqrt(rp["R"] * rp["B"] * mu2_eta(float(e), rp["B"], 2)) - 1.0
+            for e in eta
+        ]
+    )
 
     # Fixed-path reduced-variable collapse.
     fig, ax = plt.subplots(figsize=(4.7, 3.45), constrained_layout=True)
     ax.plot(eta, 100 * eps, color=PATH_COLOR["AlCu"], label="Al+Cu reduced curve")
-    ax.scatter(d.eta_cut, 100 * d.epsilon, s=28, color="black", zorder=3,
-               label="momentum settings")
+    ax.scatter(
+        d.eta_cut,
+        100 * d.epsilon,
+        s=28,
+        color="black",
+        zorder=3,
+        label="momentum settings",
+    )
     label_offsets = {1.0: (6, 6), 2.0: (7, 8), 3.5: (9, 8), 6.0: (9, 10)}
     for _, row in d.iterrows():
         dx, dy = label_offsets.get(float(row.p), (6, 6))
-        ax.annotate(fr"${row.p:g}\,\mathrm{{GeV}}/c$",
-                    (row.eta_cut, 100 * row.epsilon),
-                    xytext=(dx, dy), textcoords="offset points", fontsize=7.2,
-                    bbox=dict(facecolor="white", edgecolor="none", alpha=0.72, pad=0.2))
+        ax.annotate(
+            rf"${row.p:g}\,\mathrm{{GeV}}/c$",
+            (row.eta_cut, 100 * row.epsilon),
+            xytext=(dx, dy),
+            textcoords="offset points",
+            fontsize=7.2,
+            bbox=dict(facecolor="white", edgecolor="none", alpha=0.72, pad=0.2),
+        )
     ax.set_xscale("log")
     ticks = [2, 3, 5, 10, 20, 30]
     ax.xaxis.set_major_locator(FixedLocator(ticks))
@@ -267,8 +303,14 @@ def plot_theory(outdir: str | Path, figdir: Path):
                 g = q[q.path == path].sort_values("value")
                 if g.empty:
                     continue
-                ax.plot(g.value, 100.0 * g.epsilon, marker=PATH_MARKER[path], ms=4.5,
-                        color=PATH_COLOR[path], label=PATH_LABEL[path])
+                ax.plot(
+                    g.value,
+                    100.0 * g.epsilon,
+                    marker=PATH_MARKER[path],
+                    ms=4.5,
+                    color=PATH_COLOR[path],
+                    label=PATH_LABEL[path],
+                )
             ax.set_xlabel(xlabel)
             ax.set_ylabel(r"$\epsilon_M$ (%)")
             _panel(ax, letter)
@@ -290,11 +332,17 @@ def plot_theory(outdir: str | Path, figdir: Path):
         xpos = np.arange(len(PATH_ORDER), dtype=float)
         for nmax, offset, marker in ((1, -0.055, "o"), (2, 0.055, "s")):
             g = deep[deep.nmax == nmax].set_index("path").reindex(PATH_ORDER)
-            axes[0].plot(xpos + offset, g.eta1_joint.to_numpy(float), marker=marker,
-                         color="0.2" if nmax == 1 else PATH_COLOR["AlCu"],
-                         label=fr"$n\leq {nmax}$")
+            axes[0].plot(
+                xpos + offset,
+                g.eta1_joint.to_numpy(float),
+                marker=marker,
+                color="0.2" if nmax == 1 else PATH_COLOR["AlCu"],
+                label=rf"$n\leq {nmax}$",
+            )
         axes[0].axhline(1.0, lw=0.8, color="k")
-        axes[0].set_xticks(xpos, [PATH_LABEL[p] for p in PATH_ORDER], rotation=15, ha="right")
+        axes[0].set_xticks(
+            xpos, [PATH_LABEL[p] for p in PATH_ORDER], rotation=15, ha="right"
+        )
         axes[0].set_ylabel(r"asymptotic $\eta_1$")
         axes[0].set_xlabel("material path")
         axes[0].legend(frameon=False)
@@ -308,11 +356,18 @@ def plot_theory(outdir: str | Path, figdir: Path):
             lo = g.eta_min.to_numpy(float)
             hi = g.eta_max.to_numpy(float)
             y = 100.0 * (g.slope_ratio.to_numpy(float) - 1.0)
-            axes[1].errorbar(x, y, xerr=np.vstack([x - lo, hi - x]),
-                             marker=PATH_MARKER[path], ms=4.5, capsize=2,
-                             color=PATH_COLOR[path], label=PATH_LABEL[path])
+            axes[1].errorbar(
+                x,
+                y,
+                xerr=np.vstack([x - lo, hi - x]),
+                marker=PATH_MARKER[path],
+                ms=4.5,
+                capsize=2,
+                color=PATH_COLOR[path],
+                label=PATH_LABEL[path],
+            )
         eta0 = float(e.eta_table_max.iloc[0])
-        axes[1].axvline(eta0, lw=0.9, ls="--", color="k", label=fr"$\eta_0={eta0:g}$")
+        axes[1].axvline(eta0, lw=0.9, ls="--", color="k", label=rf"$\eta_0={eta0:g}$")
         axes[1].axhline(0.0, lw=0.8, color="k")
         axes[1].set_xscale("log")
         axes[1].set_xlim(7.0, eta0 * 1.08)
@@ -335,10 +390,20 @@ def plot_theory(outdir: str | Path, figdir: Path):
             axes[0].set_ylabel(r"$\Delta p/p$ (%)")
             _panel(axes[0], "a")
 
-            axes[1].plot(alcu.p, 100.0 * alcu.epsilon_matched_dchi, "o-",
-                         color=PATH_COLOR["Al25"], label="matched")
-            axes[1].plot(alcu.p, 100.0 * alcu.epsilon_mixed_dchi, "s-",
-                         color=PATH_COLOR["AlCu"], label="upstream-tagged")
+            axes[1].plot(
+                alcu.p,
+                100.0 * alcu.epsilon_matched_dchi,
+                "o-",
+                color=PATH_COLOR["Al25"],
+                label="matched",
+            )
+            axes[1].plot(
+                alcu.p,
+                100.0 * alcu.epsilon_mixed_dchi,
+                "s-",
+                color=PATH_COLOR["AlCu"],
+                label="upstream-tagged",
+            )
             axes[1].set_xlabel(r"$p_{\rm in}$ (GeV/$c$)")
             axes[1].set_ylabel(r"normalization mismatch $\epsilon$ (%)")
             axes[1].legend(frameon=False, loc="lower right")
@@ -357,8 +422,13 @@ def plot_theory(outdir: str | Path, figdir: Path):
             axes[0].set_xlabel(r"$\Theta$ (mrad)")
             axes[0].set_ylabel(r"$h_M(\Theta)\Theta^3/(2\chi_c^2)$")
             for _, row in tail.iterrows():
-                axes[0].annotate(f"{row.ratio:.3f}", (row.theta_mrad, row.ratio),
-                                 xytext=(4, 3), textcoords="offset points", fontsize=7.5)
+                axes[0].annotate(
+                    f"{row.ratio:.3f}",
+                    (row.theta_mrad, row.ratio),
+                    xytext=(4, 3),
+                    textcoords="offset points",
+                    fontsize=7.5,
+                )
             _panel(axes[0], "a")
         else:
             axes[0].axis("off")
@@ -407,9 +477,15 @@ def plot_images(
 
     fig, axes = plt.subplots(1, 2, figsize=(7.8, 3.45), constrained_layout=False)
     for i, (ax, m, label, vmax) in enumerate(zip(axes, maps, labels, scales)):
-        im = ax.imshow(m.T, origin="lower",
-                       extent=[-VOX_HALF, VOX_HALF, -VOX_HALF, VOX_HALF],
-                       vmin=-vmax, vmax=vmax, cmap=cmap, interpolation="nearest")
+        im = ax.imshow(
+            m.T,
+            origin="lower",
+            extent=[-VOX_HALF, VOX_HALF, -VOX_HALF, VOX_HALF],
+            vmin=-vmax,
+            vmax=vmax,
+            cmap=cmap,
+            interpolation="nearest",
+        )
         _add_target_overlay(ax)
         ax.set_xlabel(r"$x$ (cm)")
         ax.set_title(label)
@@ -418,9 +494,18 @@ def plot_images(
         _panel(ax, "ab"[i])
     axes[0].set_ylabel(r"$y$ (cm)")
     if count_mask is not None and np.any(count_mask):
-        axes[1].legend(handles=[Patch(facecolor="#e8e8e8", edgecolor="0.6",
-                                      label=fr"masked: $N_{{\rm voxel}}<{MIN_VOX_COUNT}$")],
-                       loc="lower center", frameon=True, fontsize=7)
+        axes[1].legend(
+            handles=[
+                Patch(
+                    facecolor="#e8e8e8",
+                    edgecolor="0.6",
+                    label=rf"masked: $N_{{\rm voxel}}<{MIN_VOX_COUNT}$",
+                )
+            ],
+            loc="lower center",
+            frameon=True,
+            fontsize=7,
+        )
     _save(fig, out, "difference_maps", figdir)
 
     # Combine the two scalar production summaries.
@@ -431,14 +516,30 @@ def plot_images(
         if art_csv.exists():
             a = pd.read_csv(art_csv).iloc[0]
             vals = [a.artifact_rms, a.p_residual_rms]
-            bars = axes[0].bar([r"$I_{\rm nom}-I_Q$", r"$I_p-I_Q$"], vals,
-                               color=[PATH_COLOR["Pb15"], PATH_COLOR["Cu15"]])
+            bars = axes[0].bar(
+                [r"$I_{\rm nom}-I_Q$", r"$I_p-I_Q$"],
+                vals,
+                color=[PATH_COLOR["Pb15"], PATH_COLOR["Cu15"]],
+            )
             for bar, val in zip(bars, vals):
-                axes[0].text(bar.get_x() + bar.get_width()/2, bar.get_height(),
-                             f"{val:.2g}", ha="center", va="bottom", fontsize=8)
+                axes[0].text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height(),
+                    f"{val:.2g}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=8,
+                )
             axes[0].set_ylabel("image RMS difference")
-            axes[0].text(0.97, 0.94, f"reduction = {100.0*a.p_reduction:.1f}%",
-                         transform=axes[0].transAxes, ha="right", va="top", fontsize=8)
+            axes[0].text(
+                0.97,
+                0.94,
+                f"reduction = {100.0 * a.p_reduction:.1f}%",
+                transform=axes[0].transAxes,
+                ha="right",
+                va="top",
+                fontsize=8,
+            )
             _panel(axes[0], "a")
         else:
             axes[0].axis("off")
@@ -446,11 +547,20 @@ def plot_images(
             d = pd.read_csv(path_csv)
             order = [x for x in ["Al-only", "Cu-bearing"] if x in set(d.region)]
             d = d.set_index("region").reindex(order).reset_index()
-            bars = axes[1].bar(d.region, d.image_rms,
-                               color=[PATH_COLOR["Al25"], PATH_COLOR["AlCu"]][:len(d)])
+            bars = axes[1].bar(
+                d.region,
+                d.image_rms,
+                color=[PATH_COLOR["Al25"], PATH_COLOR["AlCu"]][: len(d)],
+            )
             for bar, val in zip(bars, d.image_rms.to_numpy(float)):
-                axes[1].text(bar.get_x() + bar.get_width()/2, bar.get_height(),
-                             f"{val:.2g}", ha="center", va="bottom", fontsize=8)
+                axes[1].text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height(),
+                    f"{val:.2g}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=8,
+                )
             axes[1].set_ylabel(r"image RMS of $I_p-I_Q$")
             axes[1].set_xlabel("reference-path class")
             _panel(axes[1], "b")
@@ -464,15 +574,24 @@ def plot_images(
         d = pd.read_csv(p)
         d = d[d.denominator == "all generated"].copy()
         if not d.empty:
-            fig, axes = plt.subplots(1, 2, figsize=(7.3, 3.05), sharey=True, constrained_layout=True)
+            fig, axes = plt.subplots(
+                1, 2, figsize=(7.3, 3.05), sharey=True, constrained_layout=True
+            )
             specs = [
                 ("truth", ["Pb-crossing", "Cu-only"], "truth classification", "a"),
                 ("reconstructed", ["Pb ROI", "Cu ROI"], "reconstructed ROI", "b"),
             ]
             for ax, (classification, order, title, letter) in zip(axes, specs):
-                g = d[d.classification == classification].set_index("group").reindex(order).reset_index()
+                g = (
+                    d[d.classification == classification]
+                    .set_index("group")
+                    .reindex(order)
+                    .reset_index()
+                )
                 vals = 100.0 * g.retention.to_numpy(float)
-                bars = ax.bar(g.group, vals, color=[PATH_COLOR["Pb15"], PATH_COLOR["Cu15"]])
+                bars = ax.bar(
+                    g.group, vals, color=[PATH_COLOR["Pb15"], PATH_COLOR["Cu15"]]
+                )
                 ax.bar_label(bars, fmt="%.1f%%", padding=2, fontsize=8)
                 ax.set_ylim(0, 100)
                 ax.set_title(title)
@@ -502,15 +621,27 @@ def plot_gradient(outdir: str | Path, figdir: Path, percentile: float = 99.0):
 
     fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.15), constrained_layout=True)
     im_obs = None
-    for i, (ax, v, label, vmax) in enumerate(zip(
-        axes,
-        [observed, predicted, residual],
-        [r"observed $I_{\rm nom}-I_Q$", "normalization-field predictor", "one-amplitude residual"],
-        [obs_scale, pred_scale, obs_scale],
-    )):
-        im = ax.imshow(v.T, origin="lower",
-                       extent=[-VOX_HALF, VOX_HALF, -VOX_HALF, VOX_HALF],
-                       vmin=-vmax, vmax=vmax, cmap=cmap, interpolation="nearest")
+    for i, (ax, v, label, vmax) in enumerate(
+        zip(
+            axes,
+            [observed, predicted, residual],
+            [
+                r"observed $I_{\rm nom}-I_Q$",
+                "normalization-field predictor",
+                "one-amplitude residual",
+            ],
+            [obs_scale, pred_scale, obs_scale],
+        )
+    ):
+        im = ax.imshow(
+            v.T,
+            origin="lower",
+            extent=[-VOX_HALF, VOX_HALF, -VOX_HALF, VOX_HALF],
+            vmin=-vmax,
+            vmax=vmax,
+            cmap=cmap,
+            interpolation="nearest",
+        )
         if i == 0:
             im_obs = im
         ax.set_xlabel(r"$x$ (cm)")
@@ -519,11 +650,17 @@ def plot_gradient(outdir: str | Path, figdir: Path, percentile: float = 99.0):
     axes[0].set_ylabel(r"$y$ (cm)")
 
     # One shared scale for observed/residual; predictor gets a separate scale.
-    fig.colorbar(im_obs, ax=[axes[0], axes[2]], fraction=0.026, pad=0.02,
-                 label="weight difference")
+    fig.colorbar(
+        im_obs,
+        ax=[axes[0], axes[2]],
+        fraction=0.026,
+        pad=0.02,
+        label="weight difference",
+    )
     pred_im = axes[1].images[0]
-    fig.colorbar(pred_im, ax=axes[1], fraction=0.046, pad=0.03,
-                 label="normalization excess")
+    fig.colorbar(
+        pred_im, ax=axes[1], fraction=0.046, pad=0.03, label="normalization excess"
+    )
 
     p = out / "gradient_summary.csv"
     if p.exists():
@@ -531,10 +668,16 @@ def plot_gradient(outdir: str | Path, figdir: Path, percentile: float = 99.0):
         r = s[s.predictor == "normalization_field"]
         if not r.empty:
             row = r.iloc[0]
-            axes[2].text(0.03, 0.97,
-                         f"$r={row.correlation:.3f}$\nresidual = {100.0*row.residual_fraction:.1f}%",
-                         transform=axes[2].transAxes, ha="left", va="top", fontsize=8,
-                         bbox=dict(facecolor="white", alpha=0.82, edgecolor="0.75", pad=2.0))
+            axes[2].text(
+                0.03,
+                0.97,
+                f"$r={row.correlation:.3f}$\nresidual = {100.0 * row.residual_fraction:.1f}%",
+                transform=axes[2].transAxes,
+                ha="left",
+                va="top",
+                fontsize=8,
+                bbox=dict(facecolor="white", alpha=0.82, edgecolor="0.75", pad=2.0),
+            )
     _save(fig, out, "gradient_causal_maps", figdir)
 
 
@@ -558,7 +701,7 @@ def plot_paired(csv_path: Path, figdir: Path):
     source = csv_path.parent / "paired"
     labels = [_comparison_label(x) for x in d.comparison]
     x = np.arange(len(d))
-    colors = [PATH_COLOR["Pb15"], PATH_COLOR["Cu15"]][:len(d)]
+    colors = [PATH_COLOR["Pb15"], PATH_COLOR["Cu15"]][: len(d)]
 
     fig, axes = plt.subplots(1, 2, figsize=(7.0, 3.05), constrained_layout=False)
     for ax, mean, sd, ylabel, letter in (
@@ -567,12 +710,27 @@ def plot_paired(csv_path: Path, figdir: Path):
     ):
         ax.axhline(0.0, color="k", lw=0.8)
         for i in range(len(d)):
-            ax.errorbar(x[i], mean.iloc[i], yerr=sd.iloc[i], fmt="o", capsize=3,
-                        color=colors[i], ms=5)
+            ax.errorbar(
+                x[i],
+                mean.iloc[i],
+                yerr=sd.iloc[i],
+                fmt="o",
+                capsize=3,
+                color=colors[i],
+                ms=5,
+            )
         ax.set_xticks(x, labels)
         ax.set_ylabel(ylabel)
-        ax.text(-0.10, 1.01, f"({letter})", transform=ax.transAxes,
-                ha="left", va="bottom", fontweight="bold", fontsize=10)
+        ax.text(
+            -0.10,
+            1.01,
+            f"({letter})",
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontweight="bold",
+            fontsize=10,
+        )
     fig.subplots_adjust(top=0.92, bottom=0.19, wspace=0.32)
     _save(fig, source, "seed_summary", figdir)
 
@@ -581,14 +739,20 @@ def plot_paired(csv_path: Path, figdir: Path):
 # CLI modes
 
 
-def run_paper(root: Path, explicit_figdir: str | Path | None = None, percentile: float = 99.0):
+def run_paper(
+    root: Path, explicit_figdir: str | Path | None = None, percentile: float = 99.0
+):
     """Generate only the canonical manuscript figures, not every seed diagnostic."""
     root = root.resolve()
     figdir = _figdir(root, explicit_figdir)
 
     theory = _first_existing(root, ["theory"], "theory_collapse.csv")
-    production = _first_existing(root, ["production_analysis", "production"], "images.npz")
-    gradient = _first_existing(root, ["gradient_analysis", "gradient"], "gradient_maps.npz")
+    production = _first_existing(
+        root, ["production_analysis", "production"], "images.npz"
+    )
+    gradient = _first_existing(
+        root, ["gradient_analysis", "gradient"], "gradient_maps.npz"
+    )
 
     if theory:
         plot_theory(theory, figdir)
@@ -609,7 +773,9 @@ def run_paper(root: Path, explicit_figdir: str | Path | None = None, percentile:
     print(f"gradient source:   {gradient}")
 
 
-def run_all(root: Path, explicit_figdir: str | Path | None = None, percentile: float = 99.0):
+def run_all(
+    root: Path, explicit_figdir: str | Path | None = None, percentile: float = 99.0
+):
     """Generate all unique seed/count diagnostics as well as theory outputs."""
     root = root.resolve()
     figdir = _figdir(root, explicit_figdir)
@@ -617,12 +783,16 @@ def run_all(root: Path, explicit_figdir: str | Path | None = None, percentile: f
     theory_dirs = _scan_dirs(root, "theory_collapse.csv")
     image_dirs = _scan_dirs(root, "images.npz")
     gradient_dirs = _scan_dirs(root, "gradient_maps.npz")
-    nominal_vmax, p_vmax = image_scales(image_dirs, percentile) if image_dirs else (None, None)
+    nominal_vmax, p_vmax = (
+        image_scales(image_dirs, percentile) if image_dirs else (None, None)
+    )
 
     for d in theory_dirs:
         plot_theory(d, figdir)
     for d in image_dirs:
-        plot_images(d, figdir, nominal_vmax=nominal_vmax, p_vmax=p_vmax, percentile=percentile)
+        plot_images(
+            d, figdir, nominal_vmax=nominal_vmax, p_vmax=p_vmax, percentile=percentile
+        )
     for d in gradient_dirs:
         plot_gradient(d, figdir, percentile=percentile)
 
@@ -640,15 +810,27 @@ def run_all(root: Path, explicit_figdir: str | Path | None = None, percentile: f
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Generate centralized publication figures.")
+    ap = argparse.ArgumentParser(
+        description="Generate centralized publication figures."
+    )
     ap.add_argument("--root", default="out", help="results root; default: out")
-    ap.add_argument("--figdir", default=None, help="override figure directory; default: <root>/figs")
+    ap.add_argument(
+        "--figdir", default=None, help="override figure directory; default: <root>/figs"
+    )
     mode = ap.add_mutually_exclusive_group()
-    mode.add_argument("--paper", action="store_true", help="canonical manuscript figures only")
-    mode.add_argument("--all", action="store_true", help="all unique seed/count diagnostics")
+    mode.add_argument(
+        "--paper", action="store_true", help="canonical manuscript figures only"
+    )
+    mode.add_argument(
+        "--all", action="store_true", help="all unique seed/count diagnostics"
+    )
     ap.add_argument("--outdir", default=None, help="plot one results directory")
-    ap.add_argument("--kind", choices=["theory", "images", "gradient", "all"], default="all")
-    ap.add_argument("--percentile", type=float, default=99.0, help="robust display-scale percentile")
+    ap.add_argument(
+        "--kind", choices=["theory", "images", "gradient", "all"], default="all"
+    )
+    ap.add_argument(
+        "--percentile", type=float, default=99.0, help="robust display-scale percentile"
+    )
     a = ap.parse_args()
 
     if a.paper:

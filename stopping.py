@@ -40,20 +40,48 @@ NEGLECTED
 * Delta-ray escape.  The unrestricted mean loss is used, which is the correct
   quantity for the mean momentum degradation of the muon along the path.
 """
+
 import math
 
-M_E = 0.510998950e-3      # GeV
-M_MU = 0.10566            # GeV  -- must match config.M_MU
-K_BETHE = 0.307075        # MeV mol^-1 cm^2
+M_E = 0.510998950e-3  # GeV
+M_MU = 0.10566  # GeV  -- must match config.M_MU
+K_BETHE = 0.307075  # MeV mol^-1 cm^2
 
 # Z, A, I[eV], Cbar, x0, x1, a, k, delta0
 STERNHEIMER = {
-    "Al": dict(Z=13.0, A=26.98, I=166.0, Cbar=4.2395,
-               x0=0.1708, x1=3.0127, a=0.08024, k=3.6345, d0=0.12),
-    "Cu": dict(Z=29.0, A=63.55, I=322.0, Cbar=4.4190,
-               x0=-0.0254, x1=3.2792, a=0.14339, k=2.9044, d0=0.08),
-    "Pb": dict(Z=82.0, A=207.2, I=823.0, Cbar=6.2018,
-               x0=0.3776, x1=3.8073, a=0.09359, k=3.1608, d0=0.14),
+    "Al": dict(
+        Z=13.0,
+        A=26.98,
+        I=166.0,
+        Cbar=4.2395,
+        x0=0.1708,
+        x1=3.0127,
+        a=0.08024,
+        k=3.6345,
+        d0=0.12,
+    ),
+    "Cu": dict(
+        Z=29.0,
+        A=63.55,
+        I=322.0,
+        Cbar=4.4190,
+        x0=-0.0254,
+        x1=3.2792,
+        a=0.14339,
+        k=2.9044,
+        d0=0.08,
+    ),
+    "Pb": dict(
+        Z=82.0,
+        A=207.2,
+        I=823.0,
+        Cbar=6.2018,
+        x0=0.3776,
+        x1=3.8073,
+        a=0.09359,
+        k=3.1608,
+        d0=0.14,
+    ),
 }
 
 # PDG published minimum mass stopping powers, MeV cm^2 g^-1 (validation only)
@@ -81,10 +109,15 @@ def dedx(p_gev, material):
     beta = p_gev / math.sqrt(p_gev * p_gev + M_MU * M_MU)
     bg = beta * gamma
     r = M_E / M_MU
-    t_max = 2.0 * M_E * bg * bg / (1.0 + 2.0 * gamma * r + r * r)      # GeV
+    t_max = 2.0 * M_E * bg * bg / (1.0 + 2.0 * gamma * r + r * r)  # GeV
     arg = (2.0 * M_E * 1e9 * bg * bg) * (t_max * 1e9) / (m["I"] ** 2)  # eV*eV/eV^2
-    return (K_BETHE * m["Z"] / m["A"] / (beta * beta)
-            * (0.5 * math.log(arg) - beta * beta - 0.5 * _delta(bg, m)))
+    return (
+        K_BETHE
+        * m["Z"]
+        / m["A"]
+        / (beta * beta)
+        * (0.5 * math.log(arg) - beta * beta - 0.5 * _delta(bg, m))
+    )
 
 
 def dedx_of_E(E_gev, material):
@@ -113,10 +146,11 @@ if __name__ == "__main__":
     ok = True
     for n, (got, want, rel, bg) in validate().items():
         ok &= abs(rel) < 0.01
-        print(f"{n:>4} {got:8.4f} {want:8.4f} {rel*100:+8.3f}% {bg:9.3f}")
+        print(f"{n:>4} {got:8.4f} {want:8.4f} {rel * 100:+8.3f}% {bg:9.3f}")
     print("\nRESULT:", "PASS" if ok else "FAIL (Sternheimer constants suspect)")
     print()
     print(f"{'p(GeV/c)':>9} {'S_Al':>8} {'S_Cu':>8} {'S_Pb':>8}")
     for p in (0.5, 0.75, 1.0, 2.0, 3.5, 6.0):
-        print(f"{p:9.2f} {dedx(p,'Al'):8.4f} {dedx(p,'Cu'):8.4f} "
-              f"{dedx(p,'Pb'):8.4f}")
+        print(
+            f"{p:9.2f} {dedx(p, 'Al'):8.4f} {dedx(p, 'Cu'):8.4f} {dedx(p, 'Pb'):8.4f}"
+        )

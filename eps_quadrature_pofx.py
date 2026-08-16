@@ -42,6 +42,7 @@ Neither matters per event with a varying path, where the rounding is
 unbiased.  Both matter on a FIXED path, where the same X is rounded the same
 way every time.  Use the *_exact functions, or eps_M_marginal_pofx, there.
 """
+
 import math
 from functools import lru_cache
 
@@ -51,24 +52,28 @@ import energy_loss as el
 from config import MATERIALS, P_CACHE_STEP, THETA_CUT, X_CACHE_STEP
 from kinematics import theta_space_highland
 
-_CUT_CACHE_STEP = 0.002   # rad, matches eps_quadrature
-_TOL = 0.01               # Step 1.1 slicing criterion
+_CUT_CACHE_STEP = 0.002  # rad, matches eps_quadrature
+_TOL = 0.01  # Step 1.1 slicing criterion
 
 # Axial reference path (manuscript Sec. IV A), matching eps_quadrature.
-_AXIAL_T_AL = 10.0        # cm
-_AXIAL_T_CU = 15.0        # cm
+_AXIAL_T_AL = 10.0  # cm
+_AXIAL_T_CU = 15.0  # cm
 
 
 def _thicknesses(X_al, X_cu, X_pb):
-    return (X_al / MATERIALS["Al"]["rho"],
-            X_cu / MATERIALS["Cu"]["rho"],
-            X_pb / MATERIALS["Pb"]["rho"])
+    return (
+        X_al / MATERIALS["Al"]["rho"],
+        X_cu / MATERIALS["Cu"]["rho"],
+        X_pb / MATERIALS["Pb"]["rho"],
+    )
 
 
 def _x_over_x0(X_al, X_cu, X_pb):
-    return (X_al / MATERIALS["Al"]["rho"] / MATERIALS["Al"]["X0"]
-            + X_cu / MATERIALS["Cu"]["rho"] / MATERIALS["Cu"]["X0"]
-            + X_pb / MATERIALS["Pb"]["rho"] / MATERIALS["Pb"]["X0"])
+    return (
+        X_al / MATERIALS["Al"]["rho"] / MATERIALS["Al"]["X0"]
+        + X_cu / MATERIALS["Cu"]["rho"] / MATERIALS["Cu"]["X0"]
+        + X_pb / MATERIALS["Pb"]["rho"] / MATERIALS["Pb"]["X0"]
+    )
 
 
 def _broadcast_inputs(*xs):
@@ -86,6 +91,7 @@ def _compat_shape(values, shape):
 # EXACT (unbucketed) -- for fixed reference paths
 # ==========================================================================
 
+
 def calibrate_exact(p, X_al, X_cu, X_pb, theta_cut=THETA_CUT, tol=_TOL):
     """Unbucketed p(X) calibration for one momentum and one path.
 
@@ -93,8 +99,7 @@ def calibrate_exact(p, X_al, X_cu, X_pb, theta_cut=THETA_CUT, tol=_TOL):
     thicknesses, so it is signature-compatible with the rest of this module.
     """
     t_al, t_cu, t_pb = _thicknesses(float(X_al), float(X_cu), float(X_pb))
-    return el.calibrate(t_al, t_cu, t_pb, float(p),
-                        theta_cut=float(theta_cut), tol=tol)
+    return el.calibrate(t_al, t_cu, t_pb, float(p), theta_cut=float(theta_cut), tol=tol)
 
 
 def theta_RMS_pofx_exact(p, X_al, X_cu, X_pb, theta_cut=THETA_CUT):
@@ -117,6 +122,7 @@ def p_exit_exact(p, X_al, X_cu, X_pb, theta_cut=THETA_CUT):
 # BUCKETED -- for per-event, varying-path use
 # ==========================================================================
 
+
 @lru_cache(maxsize=65536)
 def _calib_bucketed(p_key, al_key, cu_key, pb_key, cut_key):
     """(theta_RMS, theta_space_pofx, p_out) for one bucket, or zeros."""
@@ -127,8 +133,9 @@ def _calib_bucketed(p_key, al_key, cu_key, pb_key, cut_key):
     if p <= 0.0 or cut <= 0.0:
         return 0.0, 0.0, 0.0
     try:
-        r = calibrate_exact(p, al_key * X_CACHE_STEP, cu_key * X_CACHE_STEP,
-                            pb_key * X_CACHE_STEP, cut)
+        r = calibrate_exact(
+            p, al_key * X_CACHE_STEP, cu_key * X_CACHE_STEP, pb_key * X_CACHE_STEP, cut
+        )
     except (RuntimeError, ValueError):
         # muon ranges out in this bucket: no exiting event exists to weight
         return 0.0, 0.0, 0.0
@@ -138,13 +145,15 @@ def _calib_bucketed(p_key, al_key, cu_key, pb_key, cut_key):
 def _eval(p, X_al, X_cu, X_pb, theta_cut, which):
     (flat, shape) = _broadcast_inputs(p, X_al, X_cu, X_pb, theta_cut)
     p_f, al_f, cu_f, pb_f, cut_f = flat
-    keys = np.column_stack([
-        np.rint(p_f / P_CACHE_STEP).astype(np.int64),
-        np.rint(al_f / X_CACHE_STEP).astype(np.int64),
-        np.rint(cu_f / X_CACHE_STEP).astype(np.int64),
-        np.rint(pb_f / X_CACHE_STEP).astype(np.int64),
-        np.rint(cut_f / _CUT_CACHE_STEP).astype(np.int64),
-    ])
+    keys = np.column_stack(
+        [
+            np.rint(p_f / P_CACHE_STEP).astype(np.int64),
+            np.rint(al_f / X_CACHE_STEP).astype(np.int64),
+            np.rint(cu_f / X_CACHE_STEP).astype(np.int64),
+            np.rint(pb_f / X_CACHE_STEP).astype(np.int64),
+            np.rint(cut_f / _CUT_CACHE_STEP).astype(np.int64),
+        ]
+    )
     unique, inv = np.unique(keys, axis=0, return_inverse=True)
     vals = np.empty((unique.shape[0], 3), dtype=float)
     for i, k in enumerate(unique):
@@ -162,8 +171,8 @@ def _eval(p, X_al, X_cu, X_pb, theta_cut, which):
             out = np.where(tspx > 0.0, trms / tspx - 1.0, 0.0)
     elif which == "eps_mix":
         ts0 = np.asarray(
-            theta_space_highland(p_f, _x_over_x0(al_f, cu_f, pb_f)),
-            dtype=float)
+            theta_space_highland(p_f, _x_over_x0(al_f, cu_f, pb_f)), dtype=float
+        )
         with np.errstate(divide="ignore", invalid="ignore"):
             out = np.where(ts0 > 0.0, trms / ts0 - 1.0, 0.0)
     else:
@@ -210,8 +219,8 @@ def eps_M_mixed(p, X_al, X_cu, X_pb, theta_cut=THETA_CUT):
 # Building a table costs ~800 calibrate() calls, once per process per
 # (theta_cut, mixed) pair.
 
-_MARGINAL_P_LO = 0.30      # GeV/c; below this a muon ranges out of 161 g/cm^2
-_MARGINAL_P_HI = 200.0     # GeV/c
+_MARGINAL_P_LO = 0.30  # GeV/c; below this a muon ranges out of 161 g/cm^2
+_MARGINAL_P_HI = 200.0  # GeV/c
 _MARGINAL_N = 800
 _MARGINAL_CACHE = {}
 
@@ -223,16 +232,16 @@ def _marginal_grid(theta_cut, mixed):
     X_al = MATERIALS["Al"]["rho"] * _AXIAL_T_AL
     X_cu = MATERIALS["Cu"]["rho"] * _AXIAL_T_CU
     field = "eps_mix" if mixed else "eps_M"
-    lnp_grid = np.linspace(math.log(_MARGINAL_P_LO), math.log(_MARGINAL_P_HI),
-                           _MARGINAL_N)
+    lnp_grid = np.linspace(
+        math.log(_MARGINAL_P_LO), math.log(_MARGINAL_P_HI), _MARGINAL_N
+    )
     lnp, vals = [], []
     for v in lnp_grid:
         try:
-            vals.append(calibrate_exact(math.exp(v), X_al, X_cu, 0.0,
-                                        theta_cut)[field])
+            vals.append(calibrate_exact(math.exp(v), X_al, X_cu, 0.0, theta_cut)[field])
             lnp.append(v)
         except (RuntimeError, ValueError):
-            continue          # muon ranges out; left to the fallback branch
+            continue  # muon ranges out; left to the fallback branch
     if not lnp:
         raise RuntimeError("marginal p(X) grid is empty; check the path")
     out = (np.asarray(lnp), np.asarray(vals))
@@ -270,10 +279,11 @@ def eps_M_marginal_pofx(p, mixed=True, theta_cut=THETA_CUT):
         field = "eps_mix" if mixed else "eps_M"
         for i in np.flatnonzero(outside):
             try:
-                out[i] = calibrate_exact(float(flat[i]), X_al, X_cu, 0.0,
-                                         theta_cut)[field]
+                out[i] = calibrate_exact(float(flat[i]), X_al, X_cu, 0.0, theta_cut)[
+                    field
+                ]
             except (RuntimeError, ValueError):
-                out[i] = 0.0     # ranged out: never reaches a detector
+                out[i] = 0.0  # ranged out: never reaches a detector
     return _compat_shape(out, shape)
 
 
@@ -285,30 +295,39 @@ def _marginal_interp_error(mixed=True, theta_cut=THETA_CUT, n_probe=120):
     ps = np.exp(rng.uniform(math.log(0.5), math.log(20.0), n_probe))
     got = eps_M_marginal_pofx(ps, mixed=mixed, theta_cut=theta_cut)
     field = "eps_mix" if mixed else "eps_M"
-    want = np.array([calibrate_exact(float(v), X_al, X_cu, 0.0,
-                                     theta_cut)[field] for v in ps])
+    want = np.array(
+        [calibrate_exact(float(v), X_al, X_cu, 0.0, theta_cut)[field] for v in ps]
+    )
     return float(np.max(np.abs(got - want)) * 100.0)
 
 
 # ==========================================================================
 
+
 def verify_radial_pofx():
     """Axial reference table: constant-p, p(X), and the deployed mismatch."""
     from eps_quadrature import eps_M_exact
+
     X_al = MATERIALS["Al"]["rho"] * _AXIAL_T_AL
     X_cu = MATERIALS["Cu"]["rho"] * _AXIAL_T_CU
-    print(f"{'p':>5} {'Dp/p %':>8} {'const-p %':>11} {'p(X) %':>9} "
-          f"{'mixed %':>9} {'E[w] mixed':>11}")
+    print(
+        f"{'p':>5} {'Dp/p %':>8} {'const-p %':>11} {'p(X) %':>9} "
+        f"{'mixed %':>9} {'E[w] mixed':>11}"
+    )
     for p in (1.0, 2.0, 3.5, 6.0):
         r = calibrate_exact(p, X_al, X_cu, 0.0)
         e0 = eps_M_exact(p, X_al, X_cu, 0.0) * 100.0
-        print(f"{p:5.1f} {100*r['dp_over_p']:+8.2f} {e0:11.3f} "
-              f"{100*r['eps_M']:9.3f} {100*r['eps_mix']:9.3f} "
-              f"{(1+r['eps_mix'])**2:11.4f}")
+        print(
+            f"{p:5.1f} {100 * r['dp_over_p']:+8.2f} {e0:11.3f} "
+            f"{100 * r['eps_M']:9.3f} {100 * r['eps_mix']:9.3f} "
+            f"{(1 + r['eps_mix']) ** 2:11.4f}"
+        )
     print()
     print("All columns EXACT (no areal-density or momentum quantization).")
-    print(f"eps_M_marginal_pofx interpolation error: "
-          f"{_marginal_interp_error():.2e} pp (max over 0.5-20 GeV/c)")
+    print(
+        f"eps_M_marginal_pofx interpolation error: "
+        f"{_marginal_interp_error():.2e} pp (max over 0.5-20 GeV/c)"
+    )
 
 
 if __name__ == "__main__":

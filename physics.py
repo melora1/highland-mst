@@ -18,6 +18,7 @@ The radial n<=2 Moliere series is an asymptotic truncation.  Small negative
 regions are clipped only for probability sampling/moments and the clipped mass
 is reported so this regularisation is never silent.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -29,14 +30,25 @@ from math import factorial
 from typing import Iterable, Sequence
 
 import numpy as np
+
 _trapz = getattr(np, "trapezoid", None) or np.trapz
 from scipy.integrate import IntegrationWarning, quad, cumulative_trapezoid
 from scipy.optimize import minimize_scalar
 from scipy.special import j0
 
 from config import (
-    ALPHA, CUT_CACHE_STEP, M_E, M_MU, MATERIALS, MAT_ORDER, P_BETA_SLICE_TOL,
-    P_CACHE_STEP, PDG_MIN_DEDX, RADIAL_ETA_MAX, SEG_CACHE_STEP, THETA_CUT,
+    ALPHA,
+    CUT_CACHE_STEP,
+    M_E,
+    M_MU,
+    MATERIALS,
+    MAT_ORDER,
+    P_BETA_SLICE_TOL,
+    P_CACHE_STEP,
+    PDG_MIN_DEDX,
+    RADIAL_ETA_MAX,
+    SEG_CACHE_STEP,
+    THETA_CUT,
 )
 
 MEV = 1.0e3
@@ -58,9 +70,7 @@ def theta0_highland(p_gev, x_over_x0):
     x = np.asarray(x_over_x0, dtype=float)
     b = beta_of(p)
     with np.errstate(divide="ignore", invalid="ignore"):
-        out = (13.6 / (b * p * MEV)) * np.sqrt(x) * (
-            1.0 + 0.038 * np.log(x / (b * b))
-        )
+        out = (13.6 / (b * p * MEV)) * np.sqrt(x) * (1.0 + 0.038 * np.log(x / (b * b)))
     return np.where(x > 0.0, out, 0.0)
 
 
@@ -94,9 +104,13 @@ def dedx_mass(p_gev: float, material: str) -> float:
     bg = beta * gamma
     r = M_E / M_MU
     tmax = 2.0 * M_E * bg * bg / (1.0 + 2.0 * gamma * r + r * r)  # GeV
-    arg = (2.0 * M_E * 1e9 * bg * bg) * (tmax * 1e9) / (m.I_eV ** 2)
-    return K_BETHE * m.Z / m.A / (beta * beta) * (
-        0.5 * math.log(arg) - beta * beta - 0.5 * _density_effect(bg, material)
+    arg = (2.0 * M_E * 1e9 * bg * bg) * (tmax * 1e9) / (m.I_eV**2)
+    return (
+        K_BETHE
+        * m.Z
+        / m.A
+        / (beta * beta)
+        * (0.5 * math.log(arg) - beta * beta - 0.5 * _density_effect(bg, material))
     )
 
 
@@ -111,8 +125,12 @@ def validate_stopping_minima():
         ps = np.geomspace(0.05, 2.0, 12000)
         vals = np.array([dedx_mass(float(p), name) for p in ps])
         j = int(np.argmin(vals))
-        out[name] = dict(value=float(vals[j]), reference=want,
-                         rel=float(vals[j] / want - 1.0), bg=float(ps[j] / M_MU))
+        out[name] = dict(
+            value=float(vals[j]),
+            reference=want,
+            rel=float(vals[j] / want - 1.0),
+            bg=float(ps[j] / M_MU),
+        )
     return out
 
 
@@ -137,7 +155,9 @@ def energy_after(E_in: float, material: str, X_gcm2: float) -> float:
     R_in = float(np.interp(E_in, E_grid, R_grid))
     R_out = R_in - float(X_gcm2)
     if R_out <= 0.0:
-        raise RuntimeError(f"muon stops in {material}: range={R_in:.3f} < X={X_gcm2:.3f} g/cm^2")
+        raise RuntimeError(
+            f"muon stops in {material}: range={R_in:.3f} < X={X_gcm2:.3f} g/cm^2"
+        )
     return float(np.interp(R_out, R_grid, E_grid))
 
 
@@ -158,15 +178,25 @@ def _p_of_pbeta(q):
 # ---------------------------------------------------------------------------
 # Radial Moliere n<=2 functions
 # ---------------------------------------------------------------------------
-_RADIAL_TABLE_GRID = np.unique(np.concatenate([
-    np.linspace(0.0, 10.0, 1001),
-    np.geomspace(10.0, RADIAL_ETA_MAX, 500),
-]))
-_RADIAL_INT_GRID = np.unique(np.concatenate([
-    np.linspace(0.0, 10.0, 5001),
-    np.geomspace(10.0, RADIAL_ETA_MAX, 1500),
-]))
-_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_moliere_radial_cache.npz")
+_RADIAL_TABLE_GRID = np.unique(
+    np.concatenate(
+        [
+            np.linspace(0.0, 10.0, 1001),
+            np.geomspace(10.0, RADIAL_ETA_MAX, 500),
+        ]
+    )
+)
+_RADIAL_INT_GRID = np.unique(
+    np.concatenate(
+        [
+            np.linspace(0.0, 10.0, 5001),
+            np.geomspace(10.0, RADIAL_ETA_MAX, 1500),
+        ]
+    )
+)
+_CACHE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "_moliere_radial_cache.npz"
+)
 
 
 def _phi_quad(n: int, eta: float) -> float:
@@ -175,6 +205,7 @@ def _phi_quad(n: int, eta: float) -> float:
             return 0.0
         a = 0.25 * u * u
         return u * j0(eta * u) * math.exp(-a) * (a * math.log(a)) ** n / factorial(n)
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", IntegrationWarning)
         val, _ = quad(integrand, 0.0, 30.0, limit=1000, epsabs=1e-12, epsrel=1e-10)
@@ -184,7 +215,9 @@ def _phi_quad(n: int, eta: float) -> float:
 def _load_radial_tables():
     try:
         z = np.load(_CACHE_FILE)
-        if z["eta"].shape == _RADIAL_TABLE_GRID.shape and np.allclose(z["eta"], _RADIAL_TABLE_GRID):
+        if z["eta"].shape == _RADIAL_TABLE_GRID.shape and np.allclose(
+            z["eta"], _RADIAL_TABLE_GRID
+        ):
             return z["phi1"], z["phi2"]
     except Exception:
         pass
@@ -198,7 +231,7 @@ def _load_radial_tables():
 
 
 _PHI1, _PHI2 = _load_radial_tables()
-_PHI2_TAIL_C = float(_PHI2[-1] * RADIAL_ETA_MAX ** 6)
+_PHI2_TAIL_C = float(_PHI2[-1] * RADIAL_ETA_MAX**6)
 
 
 def phi0(eta):
@@ -239,7 +272,7 @@ def _mass_cache(B_key: int, nmax: int):
     raw_mass = float(_trapz(eta * raw, eta))
     pos_mass = float(_trapz(eta * pos, eta))
     neg_mass = float(_trapz(eta * neg, eta))
-    tail = 1.0 / (B * RADIAL_ETA_MAX ** 2) if nmax >= 1 else 0.0
+    tail = 1.0 / (B * RADIAL_ETA_MAX**2) if nmax >= 1 else 0.0
     total = pos_mass + tail
     clipped_fraction = neg_mass / max(raw_mass + tail, 1e-30)
     return total, clipped_fraction
@@ -259,14 +292,16 @@ def _dimensionless_moments(eta_cut: float, B: float, nmax: int = 2):
         if eg.size == 0 or eg[-1] < eta_cut:
             eg = np.append(eg, eta_cut)
         g = radial_series_eta(eg, B, nmax=nmax, clip=True)
-        return (float(_trapz(eg * g, eg)),
-                float(_trapz(eg ** 3 * g, eg)),
-                float(_trapz(eg ** 5 * g, eg)))
+        return (
+            float(_trapz(eg * g, eg)),
+            float(_trapz(eg**3 * g, eg)),
+            float(_trapz(eg**5 * g, eg)),
+        )
     eg = _RADIAL_INT_GRID
     g = radial_series_eta(eg, B, nmax=nmax, clip=True)
     mass = float(_trapz(eg * g, eg))
-    n2 = float(_trapz(eg ** 3 * g, eg))
-    n4 = float(_trapz(eg ** 5 * g, eg))
+    n2 = float(_trapz(eg**3 * g, eg))
+    n4 = float(_trapz(eg**5 * g, eg))
     if nmax >= 1:
         e0 = RADIAL_ETA_MAX
         mass += (1.0 / B) * (1.0 / e0**2 - 1.0 / eta_cut**2)
@@ -290,7 +325,7 @@ def radial_moments(chi_c2: float, B: float, theta_cut: float, nmax: int = 2):
     if mass <= 0.0:
         return 0.0, 0.0, 0.0
     Fc = min(max(mass / total, 0.0), 1.0)
-    return Fc, s * s * n2 / mass, s ** 4 * n4 / mass
+    return Fc, s * s * n2 / mass, s**4 * n4 / mass
 
 
 def radial_tail_ratio(theta: float, chi_c2: float, B: float, nmax: int = 2):
@@ -303,7 +338,7 @@ def radial_tail_ratio(theta: float, chi_c2: float, B: float, nmax: int = 2):
     total, _ = radial_total_mass(B, nmax=nmax)
     # P=g/(2*pi*s^2)/total; h=theta*g/s^2/total
     h = theta * g / (s * s * total)
-    return h * theta ** 3 / (2.0 * chi_c2)
+    return h * theta**3 / (2.0 * chi_c2)
 
 
 def radial_cdf_eta(B: float, nmax: int = 2):
@@ -323,7 +358,9 @@ def chi_c2_single(Z: float, A: float, X: float, p_mev: float, beta: float) -> fl
 
 
 def chi_a2_single(Z: float, p_mev: float, beta: float) -> float:
-    return 2.007e-5 * Z ** (2.0 / 3.0) * (1.0 + 3.34 * (Z * ALPHA / beta) ** 2) / p_mev ** 2
+    return (
+        2.007e-5 * Z ** (2.0 / 3.0) * (1.0 + 3.34 * (Z * ALPHA / beta) ** 2) / p_mev**2
+    )
 
 
 def solve_B(chi_c2: float, chi_a2: float) -> float:
@@ -362,7 +399,10 @@ def constant_path_parameters(X_by_material: dict[str, float], p_gev: float):
 
 
 def x_over_x0_from_X(X_by_material: dict[str, float]) -> float:
-    return sum(float(X_by_material.get(n, 0.0)) / MATERIALS[n].rho / MATERIALS[n].X0 for n in MAT_ORDER)
+    return sum(
+        float(X_by_material.get(n, 0.0)) / MATERIALS[n].rho / MATERIALS[n].X0
+        for n in MAT_ORDER
+    )
 
 
 def reduced_parameters(X_by_material: dict[str, float], p_gev: float):
@@ -370,12 +410,21 @@ def reduced_parameters(X_by_material: dict[str, float], p_gev: float):
     xx0 = x_over_x0_from_X(X_by_material)
     tspace = float(theta_space_highland(p_gev, xx0))
     R = pars["chi_c2"] / (tspace * tspace)
-    return dict(**pars, x_over_x0=xx0, theta_space=tspace, R=R,
-                sqrt2RB=math.sqrt(2.0 * R * pars["B"]))
+    return dict(
+        **pars,
+        x_over_x0=xx0,
+        theta_space=tspace,
+        R=R,
+        sqrt2RB=math.sqrt(2.0 * R * pars["B"]),
+    )
 
 
-def constant_calibration(X_by_material: dict[str, float], p_gev: float,
-                         theta_cut: float = THETA_CUT, nmax: int = 2):
+def constant_calibration(
+    X_by_material: dict[str, float],
+    p_gev: float,
+    theta_cut: float = THETA_CUT,
+    nmax: int = 2,
+):
     rp = reduced_parameters(X_by_material, p_gev)
     Fc, M2, M4 = radial_moments(rp["chi_c2"], rp["B"], theta_cut, nmax=nmax)
     trms = math.sqrt(M2)
@@ -385,10 +434,19 @@ def constant_calibration(X_by_material: dict[str, float], p_gev: float,
     mu2 = mu2_eta(eta_cut, rp["B"], nmax=nmax)
     # Exact within the radial model:
     exact_ratio2 = rp["R"] * rp["B"] * mu2
-    return dict(**rp, Fc=Fc, M2=M2, M4=M4, theta_rms=trms,
-                epsilon=trms / rp["theta_space"] - 1.0,
-                k=k, eta_cut=eta_cut, mu2=mu2, exact_ratio2=exact_ratio2,
-                clipped_fraction=radial_total_mass(rp["B"], nmax=nmax)[1])
+    return dict(
+        **rp,
+        Fc=Fc,
+        M2=M2,
+        M4=M4,
+        theta_rms=trms,
+        epsilon=trms / rp["theta_space"] - 1.0,
+        k=k,
+        eta_cut=eta_cut,
+        mu2=mu2,
+        exact_ratio2=exact_ratio2,
+        clipped_fraction=radial_total_mass(rp["B"], nmax=nmax)[1],
+    )
 
 
 def epsilon_asymptotic(eta_cut: float, R: float, eta1: float = 1.0):
@@ -410,8 +468,9 @@ def fit_eta1(eta_values: Sequence[float], eps_values: Sequence[float], R: float)
     return math.exp(ln_eta1)
 
 
-def fit_log_asymptote(eta_values: Sequence[float], eps_values: Sequence[float],
-                       R: float | None = None):
+def fit_log_asymptote(
+    eta_values: Sequence[float], eps_values: Sequence[float], R: float | None = None
+):
     """Jointly fit the large-acceptance logarithmic slope and intercept.
 
     The fitted model is
@@ -436,12 +495,15 @@ def fit_log_asymptote(eta_values: Sequence[float], eps_values: Sequence[float],
     x = np.log(eta)
     y = (1.0 + eps) ** 2 - 1.0
     slope, intercept = np.polyfit(x, y, 1)
-    slope = float(slope); intercept = float(intercept)
+    slope = float(slope)
+    intercept = float(intercept)
     eta1 = math.exp(-intercept / slope) if slope != 0.0 else np.nan
     fitted = slope * x + intercept
     resid = y - fitted
     out = dict(
-        slope=slope, intercept=intercept, eta1=eta1,
+        slope=slope,
+        intercept=intercept,
+        eta1=eta1,
         rms_residual=float(np.sqrt(np.mean(resid * resid))),
         max_abs_residual=float(np.max(np.abs(resid))),
     )
@@ -455,7 +517,9 @@ def fit_log_asymptote(eta_values: Sequence[float], eps_values: Sequence[float],
     return out
 
 
-def efficiency_constant(X_by_material: dict[str, float], p_gev: float, k: float, nmax: int = 2):
+def efficiency_constant(
+    X_by_material: dict[str, float], p_gev: float, k: float, nmax: int = 2
+):
     rp = reduced_parameters(X_by_material, p_gev)
     cut = k * rp["theta_space"] / math.sqrt(2.0)
     Fc, M2, M4 = radial_moments(rp["chi_c2"], rp["B"], cut, nmax=nmax)
@@ -464,8 +528,12 @@ def efficiency_constant(X_by_material: dict[str, float], p_gev: float, k: float,
 
 
 def optimal_k_constant(X_by_material: dict[str, float], p_gev: float, nmax: int = 2):
-    r = minimize_scalar(lambda k: -efficiency_constant(X_by_material, p_gev, k, nmax=nmax),
-                        bounds=(0.5, 8.0), method="bounded", options={"xatol": 2e-4})
+    r = minimize_scalar(
+        lambda k: -efficiency_constant(X_by_material, p_gev, k, nmax=nmax),
+        bounds=(0.5, 8.0),
+        method="bounded",
+        options={"xatol": 2e-4},
+    )
     return float(r.x), float(-r.fun)
 
 
@@ -479,11 +547,15 @@ class Layer:
 
 
 def path_x_over_x0(path: Sequence[Layer]) -> float:
-    return sum(l.thickness_cm / MATERIALS[l.material].X0 for l in path if l.thickness_cm > 0.0)
+    return sum(
+        l.thickness_cm / MATERIALS[l.material].X0 for l in path if l.thickness_cm > 0.0
+    )
 
 
 def path_mass(path: Sequence[Layer]) -> float:
-    return sum(l.thickness_cm * MATERIALS[l.material].rho for l in path if l.thickness_cm > 0.0)
+    return sum(
+        l.thickness_cm * MATERIALS[l.material].rho for l in path if l.thickness_cm > 0.0
+    )
 
 
 def slice_path(path: Sequence[Layer], p_in: float, tol: float = P_BETA_SLICE_TOL):
@@ -511,9 +583,16 @@ def slice_path(path: Sequence[Layer], p_in: float, tol: float = P_BETA_SLICE_TOL
             integ = dX / 6.0 * (1.0 / q0**2 + 4.0 / qm**2 + 1.0 / q1**2)
             qrep = math.sqrt(dX / integ)
             prep = _p_of_pbeta(qrep)
-            out.append(dict(material=layer.material, X=dX,
-                            thickness_cm=dX / m.rho, p=prep,
-                            beta=qrep / prep, pbeta=qrep))
+            out.append(
+                dict(
+                    material=layer.material,
+                    X=dX,
+                    thickness_cm=dX / m.rho,
+                    p=prep,
+                    beta=qrep / prep,
+                    pbeta=qrep,
+                )
+            )
             E = E1
     return out, E
 
@@ -574,7 +653,7 @@ def highland_core_pofx_model(slices, x_over_x0_total: float):
     for s in slices:
         xj = s["thickness_cm"] / MATERIALS[s["material"]].X0
         pb_mev = s["pbeta"] * MEV
-        core2 += 13.6 ** 2 * xj / (pb_mev * pb_mev)
+        core2 += 13.6**2 * xj / (pb_mev * pb_mev)
         w = xj / (s["pbeta"] ** 2)
         wsum += w
         beta2_weighted += w * s["beta"] ** 2
@@ -592,9 +671,14 @@ def X_by_material_from_path(path: Sequence[Layer]):
     return d
 
 
-def calibrate_pofx(path: Sequence[Layer], p_in: float, theta_cut: float = THETA_CUT,
-                   tol: float = P_BETA_SLICE_TOL, nmax: int = 2,
-                   screening_weight: str = "dchi_c2"):
+def calibrate_pofx(
+    path: Sequence[Layer],
+    p_in: float,
+    theta_cut: float = THETA_CUT,
+    tol: float = P_BETA_SLICE_TOL,
+    nmax: int = 2,
+    screening_weight: str = "dchi_c2",
+):
     if path_x_over_x0(path) <= 0:
         raise ValueError("empty path")
     slices, E_out = slice_path(path, p_in, tol=tol)
@@ -607,12 +691,24 @@ def calibrate_pofx(path: Sequence[Layer], p_in: float, theta_cut: float = THETA_
     tspace_incident = float(theta_space_highland(p_in, xx0))
     p_out = _p_of_E(E_out)
     return dict(
-        p_in=p_in, p_out=p_out, dp_over_p=p_out / p_in - 1.0,
+        p_in=p_in,
+        p_out=p_out,
+        dp_over_p=p_out / p_in - 1.0,
         delta_E=math.hypot(p_in, M_MU) - E_out,
-        x_over_x0=xx0, mass=path_mass(path), n_slices=len(slices),
-        chi_c2=c2, chi_a2=a2, B=B, Omega0=c2 / (1.167 * a2),
-        Fc=Fc, M2=M2, M4=M4, theta_rms=trms,
-        theta0_pofx=th0_px, theta_space_pofx=tspace_px, beta_eff=beta_eff,
+        x_over_x0=xx0,
+        mass=path_mass(path),
+        n_slices=len(slices),
+        chi_c2=c2,
+        chi_a2=a2,
+        B=B,
+        Omega0=c2 / (1.167 * a2),
+        Fc=Fc,
+        M2=M2,
+        M4=M4,
+        theta_rms=trms,
+        theta0_pofx=th0_px,
+        theta_space_pofx=tspace_px,
+        beta_eff=beta_eff,
         k_pofx=theta_cut / th0_px,
         eta_cut=theta_cut / math.sqrt(c2 * B),
         epsilon_matched=trms / tspace_px - 1.0,
@@ -624,8 +720,13 @@ def calibrate_pofx(path: Sequence[Layer], p_in: float, theta_cut: float = THETA_
     )
 
 
-def efficiency_pofx(path: Sequence[Layer], p_in: float, k: float, nmax: int = 2,
-                    screening_weight: str = "dchi_c2"):
+def efficiency_pofx(
+    path: Sequence[Layer],
+    p_in: float,
+    k: float,
+    nmax: int = 2,
+    screening_weight: str = "dchi_c2",
+):
     slices, _ = slice_path(path, p_in)
     c2, _, B = accumulate_moliere_pofx(slices, screening_weight=screening_weight)
     t0, _ = highland_core_pofx_model(slices, path_x_over_x0(path))
@@ -634,11 +735,19 @@ def efficiency_pofx(path: Sequence[Layer], p_in: float, k: float, nmax: int = 2,
     return math.sqrt(Fc) * M2 / math.sqrt(var) if Fc > 0 and var > 0 else 0.0
 
 
-def optimal_k_pofx(path: Sequence[Layer], p_in: float, nmax: int = 2,
-                   screening_weight: str = "dchi_c2"):
-    r = minimize_scalar(lambda k: -efficiency_pofx(path, p_in, k, nmax=nmax,
-                                                    screening_weight=screening_weight),
-                        bounds=(0.5, 8.0), method="bounded", options={"xatol": 2e-4})
+def optimal_k_pofx(
+    path: Sequence[Layer], p_in: float, nmax: int = 2, screening_weight: str = "dchi_c2"
+):
+    r = minimize_scalar(
+        lambda k: (
+            -efficiency_pofx(
+                path, p_in, k, nmax=nmax, screening_weight=screening_weight
+            )
+        ),
+        bounds=(0.5, 8.0),
+        method="bounded",
+        options={"xatol": 2e-4},
+    )
     return float(r.x), float(-r.fun)
 
 
@@ -654,8 +763,13 @@ def layers_from_segment_thicknesses(seg):
 
 class PofxCache:
     """Cache p(X) calibration on incident-p and ordered areal-density bins."""
-    def __init__(self, nmax: int = 2, tol: float = P_BETA_SLICE_TOL,
-                 screening_weight: str = "dchi_c2"):
+
+    def __init__(
+        self,
+        nmax: int = 2,
+        tol: float = P_BETA_SLICE_TOL,
+        screening_weight: str = "dchi_c2",
+    ):
         if screening_weight not in {"dchi_c2", "serial"}:
             raise ValueError("screening_weight must be 'dchi_c2' or 'serial'")
         self.nmax = nmax
@@ -668,9 +782,11 @@ class PofxCache:
     def _key(p, seg_cm, cut):
         mats = ("Al", "Cu", "Pb", "Cu", "Al")
         X = [float(t) * MATERIALS[m].rho for t, m in zip(seg_cm, mats)]
-        return (round(float(p) / P_CACHE_STEP),
-                *(round(x / SEG_CACHE_STEP) for x in X),
-                round(float(cut) / CUT_CACHE_STEP))
+        return (
+            round(float(p) / P_CACHE_STEP),
+            *(round(x / SEG_CACHE_STEP) for x in X),
+            round(float(cut) / CUT_CACHE_STEP),
+        )
 
     @staticmethod
     def _decode(key):
@@ -689,8 +805,14 @@ class PofxCache:
             if not path:
                 self._cache[key] = None
             else:
-                r = calibrate_pofx(path, pp, theta_cut=cc, tol=self.tol, nmax=self.nmax,
-                                    screening_weight=self.screening_weight)
+                r = calibrate_pofx(
+                    path,
+                    pp,
+                    theta_cut=cc,
+                    tol=self.tol,
+                    nmax=self.nmax,
+                    screening_weight=self.screening_weight,
+                )
                 self.max_clipped = max(self.max_clipped, r["clipped_fraction"])
                 self._cache[key] = r
         return self._cache[key]
@@ -700,8 +822,13 @@ class PofxCache:
         segments = np.asarray(segments, float)
         if segments.shape != (p.size, 5):
             raise ValueError("segments must have shape (N,5)")
-        cuts = np.full(p.size, float(cut)) if np.ndim(cut) == 0 else np.asarray(cut, float)
-        trms = np.zeros(p.size); eps_match = np.zeros(p.size); eps_mix = np.zeros(p.size); pout = p.copy()
+        cuts = (
+            np.full(p.size, float(cut)) if np.ndim(cut) == 0 else np.asarray(cut, float)
+        )
+        trms = np.zeros(p.size)
+        eps_match = np.zeros(p.size)
+        eps_mix = np.zeros(p.size)
+        pout = p.copy()
         groups = {}
         for i in range(p.size):
             groups.setdefault(self._key(p[i], segments[i], cuts[i]), []).append(i)
@@ -711,15 +838,29 @@ class PofxCache:
             # subtly choose one side of a cache bin.
             pp, seg, cc = self._decode(key)
             path = layers_from_segment_thicknesses(seg)
-            r = None if not path else calibrate_pofx(
-                path, pp, theta_cut=cc, tol=self.tol, nmax=self.nmax,
-                screening_weight=self.screening_weight)
+            r = (
+                None
+                if not path
+                else calibrate_pofx(
+                    path,
+                    pp,
+                    theta_cut=cc,
+                    tol=self.tol,
+                    nmax=self.nmax,
+                    screening_weight=self.screening_weight,
+                )
+            )
             self._cache[key] = r
             if r is None:
                 continue
             self.max_clipped = max(self.max_clipped, r["clipped_fraction"])
-            trms[idx] = r["theta_rms"]; eps_match[idx] = r["epsilon_matched"]; eps_mix[idx] = r["epsilon_mixed"]; pout[idx] = r["p_out"]
-        return dict(theta_rms=trms, epsilon_matched=eps_match, epsilon_mixed=eps_mix, p_out=pout)
+            trms[idx] = r["theta_rms"]
+            eps_match[idx] = r["epsilon_matched"]
+            eps_mix[idx] = r["epsilon_mixed"]
+            pout[idx] = r["p_out"]
+        return dict(
+            theta_rms=trms, epsilon_matched=eps_match, epsilon_mixed=eps_mix, p_out=pout
+        )
 
     def sample(self, p, segments, rng):
         p = np.asarray(p, float)
@@ -727,8 +868,11 @@ class PofxCache:
         tx = np.zeros(p.size)
         ty = np.zeros(p.size)
         # Group by cache key to vectorise sampling from each radial CDF.
-        keys = [self._key(p[i], segments[i], THETA_CUT)[:-1] + (round(THETA_CUT / CUT_CACHE_STEP),)
-                for i in range(p.size)]
+        keys = [
+            self._key(p[i], segments[i], THETA_CUT)[:-1]
+            + (round(THETA_CUT / CUT_CACHE_STEP),)
+            for i in range(p.size)
+        ]
         groups = {}
         for i, k in enumerate(keys):
             groups.setdefault(k, []).append(i)
@@ -747,7 +891,9 @@ class PofxCache:
             eta[core] = np.interp(u[core], cdf, eta_grid)
             if np.any(~core):
                 rr = (u[~core] - end) / max(1.0 - end, 1e-30)
-                eta[~core] = RADIAL_ETA_MAX / np.sqrt(np.maximum(1.0 - rr, np.finfo(float).tiny))
+                eta[~core] = RADIAL_ETA_MAX / np.sqrt(
+                    np.maximum(1.0 - rr, np.finfo(float).tiny)
+                )
             theta = math.sqrt(c2 * B) * eta
             az = rng.uniform(0.0, 2.0 * math.pi, idx.size)
             tx[idx] = theta * np.cos(az)

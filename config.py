@@ -3,6 +3,7 @@
 Units are cm, GeV/c, rad unless stated otherwise.  The geometry/material
 numbers match the final revision plan rather than the rounded legacy values.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,12 +13,13 @@ M_MU = 0.10566
 M_E = 0.000510998950
 ALPHA = 1.0 / 137.036
 
+
 @dataclass(frozen=True)
 class Material:
     Z: float
     A: float
-    rho: float       # g cm^-3
-    X0: float        # cm
+    rho: float  # g cm^-3
+    X0: float  # cm
     I_eV: float
     Cbar: float
     x0: float
@@ -26,14 +28,21 @@ class Material:
     k: float
     delta0: float
 
+
 # Radiation lengths/densities follow the reference quantities adopted in the
 # revision plan. Sternheimer constants are the same transcribed values used in
 # the supplied code and must be checked against the primary PDG/LBL table before
 # publication; tests only provide an indirect minimum-ionisation closure check.
 MATERIALS = {
-    "Al": Material(13.0, 26.98, 2.699, 8.896, 166.0, 4.2395, 0.1708, 3.0127, 0.08024, 3.6345, 0.12),
-    "Cu": Material(29.0, 63.55, 8.96, 1.436, 322.0, 4.4190, -0.0254, 3.2792, 0.14339, 2.9044, 0.08),
-    "Pb": Material(82.0, 207.2, 11.35, 0.5612, 823.0, 6.2018, 0.3776, 3.8073, 0.09359, 3.1608, 0.14),
+    "Al": Material(
+        13.0, 26.98, 2.699, 8.896, 166.0, 4.2395, 0.1708, 3.0127, 0.08024, 3.6345, 0.12
+    ),
+    "Cu": Material(
+        29.0, 63.55, 8.96, 1.436, 322.0, 4.4190, -0.0254, 3.2792, 0.14339, 2.9044, 0.08
+    ),
+    "Pb": Material(
+        82.0, 207.2, 11.35, 0.5612, 823.0, 6.2018, 0.3776, 3.8073, 0.09359, 3.1608, 0.14
+    ),
 }
 MAT_ORDER = ("Al", "Cu", "Pb")
 PDG_MIN_DEDX = {"Al": 1.615, "Cu": 1.403, "Pb": 1.122}  # MeV cm^2 g^-1, validation only
@@ -80,10 +89,10 @@ CU_ROI_R = 3.75
 CU_ROI_ZHALF = 7.5
 
 # Numerical controls
-P_CACHE_STEP = 0.010          # GeV/c
-X_CACHE_STEP = 0.25           # g cm^-2
-SEG_CACHE_STEP = 0.25         # g cm^-2, ordered-segment cache
-CUT_CACHE_STEP = 0.002        # rad
+P_CACHE_STEP = 0.010  # GeV/c
+X_CACHE_STEP = 0.25  # g cm^-2
+SEG_CACHE_STEP = 0.25  # g cm^-2, ordered-segment cache
+CUT_CACHE_STEP = 0.002  # rad
 P_BETA_SLICE_TOL = 0.01
 RADIAL_ETA_MAX = 30.0
 RADIAL_TABLE_ETA_MAX = 30.0

@@ -5,6 +5,7 @@ onto the requested raster node; Moliere scattering is sampled from the ordered
 p(X) path; the upstream spectrometer tags incident momentum; and PoCA remains a
 single-kink diagnostic rather than a full transport reconstruction.
 """
+
 from __future__ import annotations
 
 import math
@@ -15,9 +16,21 @@ import numpy as np
 import pandas as pd
 
 from config import (
-    BL, MOM_BITE, MOMENTA, OUT_DIR, RASTER_HALF, RASTER_NX, RASTER_NY,
-    SEED_BASE, SIGMA_DIV, SIGMA_HIT, SIGMA_XY, STATION_Z, STEER_COMPENSATION,
-    THETA_CUT, Z_MAGNET_CM,
+    BL,
+    MOM_BITE,
+    MOMENTA,
+    OUT_DIR,
+    RASTER_HALF,
+    RASTER_NX,
+    RASTER_NY,
+    SEED_BASE,
+    SIGMA_DIV,
+    SIGMA_HIT,
+    SIGMA_XY,
+    STATION_Z,
+    STEER_COMPENSATION,
+    THETA_CUT,
+    Z_MAGNET_CM,
 )
 from geometry import trace_paths, truth_classes, x_over_x0
 from physics import PofxCache
@@ -31,8 +44,6 @@ def raster_nodes():
     return np.array([(x, y) for x in xs for y in ys], float)
 
 
-
-
 def seed_entropy(p_set: float, center_xy=(0.0, 0.0), seed: int = 0):
     """Collision-free input tuple for NumPy SeedSequence on the production grid.
 
@@ -40,11 +51,18 @@ def seed_entropy(p_set: float, center_xy=(0.0, 0.0), seed: int = 0):
     entropy vector; the generator itself receives the full vector, avoiding the
     hand-composed scalar-seed collision risk of the legacy implementation.
     """
+
     def zz(v):
         n = int(round(float(v) * 1_000_000))
-        return 2*n if n >= 0 else -2*n - 1
-    return (int(SEED_BASE), int(seed), int(round(float(p_set) * 1_000_000)),
-            zz(center_xy[0]), zz(center_xy[1]))
+        return 2 * n if n >= 0 else -2 * n - 1
+
+    return (
+        int(SEED_BASE),
+        int(seed),
+        int(round(float(p_set) * 1_000_000)),
+        zz(center_xy[0]),
+        zz(center_xy[1]),
+    )
 
 
 def nominal_target_offset_cm(p_set: float, mode: str | None = None) -> float:
@@ -62,8 +80,9 @@ def nominal_target_offset_cm(p_set: float, mode: str | None = None) -> float:
     raise ValueError("STEER_COMPENSATION must be 'per_setting' or 'none'")
 
 
-def momentum_fractions(x, left=(0.70, 0.20, 0.07, 0.03),
-                       right=(0.03, 0.07, 0.20, 0.70)):
+def momentum_fractions(
+    x, left=(0.70, 0.20, 0.07, 0.03), right=(0.03, 0.07, 0.20, 0.70)
+):
     """Linear momentum-mixture gradient with exact unit normalization."""
     t = np.clip((np.asarray(x, float) + RASTER_HALF) / (2.0 * RASTER_HALF), 0.0, 1.0)
     a = np.asarray(left, float)
@@ -113,13 +132,20 @@ def segment_matrix(df: pd.DataFrame, prefix: str):
     return df[[f"{prefix}_{n}" for n in SEG_NAMES]].to_numpy(float)
 
 
-def simulate_fixed_node(p_set: float, n: int, center_xy=(0.0, 0.0), seed: int = 0,
-                        calibrator: PofxCache | None = None,
-                        reference_target: bool = False,
-                        steer_compensation: str | None = None):
+def simulate_fixed_node(
+    p_set: float,
+    n: int,
+    center_xy=(0.0, 0.0),
+    seed: int = 0,
+    calibrator: PofxCache | None = None,
+    reference_target: bool = False,
+    steer_compensation: str | None = None,
+):
     if n <= 0:
         return pd.DataFrame()
-    rng = np.random.default_rng(np.random.SeedSequence(seed_entropy(p_set, center_xy, seed)))
+    rng = np.random.default_rng(
+        np.random.SeedSequence(seed_entropy(p_set, center_xy, seed))
+    )
     calibrator = calibrator or PofxCache(nmax=2)
 
     z1, z2, z3, z4, z5, z6 = STATION_Z
@@ -165,9 +191,14 @@ def simulate_fixed_node(p_set: float, n: int, center_xy=(0.0, 0.0), seed: int = 
     x_in = m3x + tx_in * (0.0 - z3)
     y_in = m3y + ty_in * (0.0 - z3)
 
-    o_true = np.stack([_propagate(xm, tx1, Z_MAGNET_CM, 0.0),
-                       _propagate(ym, ty1, Z_MAGNET_CM, 0.0),
-                       np.zeros(n)], axis=1)
+    o_true = np.stack(
+        [
+            _propagate(xm, tx1, Z_MAGNET_CM, 0.0),
+            _propagate(ym, ty1, Z_MAGNET_CM, 0.0),
+            np.zeros(n),
+        ],
+        axis=1,
+    )
     u_true = np.stack([tx1, ty1, np.ones(n)], axis=1)
     u_true /= np.linalg.norm(u_true, axis=1, keepdims=True)
 
@@ -204,26 +235,40 @@ def simulate_fixed_node(p_set: float, n: int, center_xy=(0.0, 0.0), seed: int = 
     ty_out = _slope(z5, z6, m5y, m6y)
     dth_reco = np.hypot(tx_out - tx_in, ty_out - ty_in)
 
-    p_up = np.stack([m3x + tx_in * (0.0 - z3),
-                     m3y + ty_in * (0.0 - z3), np.zeros(n)], axis=1)
+    p_up = np.stack(
+        [m3x + tx_in * (0.0 - z3), m3y + ty_in * (0.0 - z3), np.zeros(n)], axis=1
+    )
     d_up = np.stack([tx_in, ty_in, np.ones(n)], axis=1)
-    p_dn = np.stack([m5x + tx_out * (0.0 - z5),
-                     m5y + ty_out * (0.0 - z5), np.zeros(n)], axis=1)
+    p_dn = np.stack(
+        [m5x + tx_out * (0.0 - z5), m5y + ty_out * (0.0 - z5), np.zeros(n)], axis=1
+    )
     d_dn = np.stack([tx_out, ty_out, np.ones(n)], axis=1)
     poca = _poca(p_up, d_up, p_dn, d_dn)
 
     cls = truth_classes(true_trace)
     data = dict(
-        p_set=np.full(n, p_set), p_true=p_true, p_meas=p_meas,
-        raster_x=np.full(n, center_xy[0]), raster_y=np.full(n, center_xy[1]),
-        delta_meas=delta_meas, theta_x=thx, theta_y=thy,
-        dth_true=dth_true, dth_reco=dth_reco,
-        t_Al=true_trace["t_Al"], t_Cu=true_trace["t_Cu"], t_Pb=true_trace["t_Pb"],
+        p_set=np.full(n, p_set),
+        p_true=p_true,
+        p_meas=p_meas,
+        raster_x=np.full(n, center_xy[0]),
+        raster_y=np.full(n, center_xy[1]),
+        delta_meas=delta_meas,
+        theta_x=thx,
+        theta_y=thy,
+        dth_true=dth_true,
+        dth_reco=dth_reco,
+        t_Al=true_trace["t_Al"],
+        t_Cu=true_trace["t_Cu"],
+        t_Pb=true_trace["t_Pb"],
         xx0_true=x_over_x0(true_trace["t_Al"], true_trace["t_Cu"], true_trace["t_Pb"]),
         xx0_ref_true=x_over_x0(ref_true["t_Al"], ref_true["t_Cu"], ref_true["t_Pb"]),
         xx0_ref_reco=x_over_x0(ref_reco["t_Al"], ref_reco["t_Cu"], ref_reco["t_Pb"]),
-        true_pb=cls["pb"], true_cu_only=cls["cu_only"], true_al_only=cls["al_only"],
-        poca_x=poca[:, 0], poca_y=poca[:, 1], poca_z=poca[:, 2],
+        true_pb=cls["pb"],
+        true_cu_only=cls["cu_only"],
+        true_al_only=cls["al_only"],
+        poca_x=poca[:, 0],
+        poca_y=poca[:, 1],
+        poca_z=poca[:, 2],
     )
     _store_segments(data, "true", true_trace["segments"])
     _store_segments(data, "ref_true", ref_true["segments"])
@@ -234,8 +279,7 @@ def simulate_fixed_node(p_set: float, n: int, center_xy=(0.0, 0.0), seed: int = 
     return df
 
 
-def simulate_equal_exposure(n_per_setting=500_000, seed=0, nodes=None,
-                            calibrator=None):
+def simulate_equal_exposure(n_per_setting=500_000, seed=0, nodes=None, calibrator=None):
     nodes = raster_nodes() if nodes is None else np.asarray(nodes, float)
     calibrator = calibrator or PofxCache(nmax=2)
     frames = []
@@ -244,13 +288,17 @@ def simulate_equal_exposure(n_per_setting=500_000, seed=0, nodes=None,
     for p in MOMENTA:
         for c, n in zip(nodes, counts):
             if n:
-                frames.append(simulate_fixed_node(p, int(n), tuple(c), seed=seed,
-                                                  calibrator=calibrator))
+                frames.append(
+                    simulate_fixed_node(
+                        p, int(n), tuple(c), seed=seed, calibrator=calibrator
+                    )
+                )
     return pd.concat(frames, ignore_index=True), calibrator
 
 
-def simulate_gradient_exposure(n_per_cell=20_000, seed=0, nodes=None,
-                               calibrator=None, reference_target=True):
+def simulate_gradient_exposure(
+    n_per_cell=20_000, seed=0, nodes=None, calibrator=None, reference_target=True
+):
     """Spatial p-mixture intervention with fixed total incident fluence/cell."""
     nodes = raster_nodes() if nodes is None else np.asarray(nodes, float)
     calibrator = calibrator or PofxCache(nmax=2)
@@ -260,9 +308,14 @@ def simulate_gradient_exposure(n_per_cell=20_000, seed=0, nodes=None,
         counts = _integer_counts(n_per_cell, fr)
         for p, n in zip(MOMENTA, counts):
             if n:
-                d = simulate_fixed_node(p, int(n), tuple(c), seed=seed + 7919 * cell_id,
-                                        calibrator=calibrator,
-                                        reference_target=reference_target)
+                d = simulate_fixed_node(
+                    p,
+                    int(n),
+                    tuple(c),
+                    seed=seed + 7919 * cell_id,
+                    calibrator=calibrator,
+                    reference_target=reference_target,
+                )
                 d["gradient_cell"] = cell_id
                 frames.append(d)
     return pd.concat(frames, ignore_index=True), calibrator
@@ -276,6 +329,7 @@ def save_events(df, path):
     returns that actual path.
     """
     from pathlib import Path
+
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix == ".pkl":
@@ -292,6 +346,7 @@ def save_events(df, path):
 
 def load_events(path):
     from pathlib import Path
+
     path = Path(path)
     if path.suffix == ".pkl":
         return pd.read_pickle(path)

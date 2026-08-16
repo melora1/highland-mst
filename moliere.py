@@ -45,8 +45,15 @@ try:
 except ImportError:  # pragma: no cover - old SciPy fallback
     pass
 
-from config import (ALPHA, MAT_ORDER, MATERIALS, P_CACHE_STEP, THETA_GRID_MAX,
-                    THETA_GRID_N, X_CACHE_STEP)
+from config import (
+    ALPHA,
+    MAT_ORDER,
+    MATERIALS,
+    P_CACHE_STEP,
+    THETA_GRID_MAX,
+    THETA_GRID_N,
+    X_CACHE_STEP,
+)
 from kinematics import beta_of
 
 
@@ -55,17 +62,23 @@ from kinematics import beta_of
 # ============================================================================
 
 _ETA_MAX = 60.0
-_F1_ASYMPTOTE_C = 0.5                 # f_p^(1) -> 1/(2 |eta|^3)
-_PROJ_ETA_GRID = np.unique(np.concatenate([
-    np.linspace(0.0, 10.0, 501),
-    np.geomspace(10.0, _ETA_MAX, 200),
-]))
-_PROJ_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "_fn_projected.npz")
+_F1_ASYMPTOTE_C = 0.5  # f_p^(1) -> 1/(2 |eta|^3)
+_PROJ_ETA_GRID = np.unique(
+    np.concatenate(
+        [
+            np.linspace(0.0, 10.0, 501),
+            np.geomspace(10.0, _ETA_MAX, 200),
+        ]
+    )
+)
+_PROJ_CACHE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "_fn_projected.npz"
+)
 
 
 def _fp_quad(n, eta):
     """Projected f_p^(n)(eta), computed from the cosine generating integral."""
+
     def g(u):
         if u <= 0.0:
             return 0.0
@@ -75,29 +88,32 @@ def _fp_quad(n, eta):
     if eta == 0.0:
         v, _ = quad(g, 0.0, 30.0, limit=800, epsabs=1e-13, epsrel=1e-11)
     else:
-        v, _ = quad(g, 0.0, 30.0, weight="cos", wvar=eta,
-                    limit=800, epsabs=1e-13, epsrel=1e-11)
+        v, _ = quad(
+            g, 0.0, 30.0, weight="cos", wvar=eta, limit=800, epsabs=1e-13, epsrel=1e-11
+        )
     return v / np.pi
 
 
 def _build_projected_tables():
-    return (np.array([_fp_quad(1, e) for e in _PROJ_ETA_GRID]),
-            np.array([_fp_quad(2, e) for e in _PROJ_ETA_GRID]))
+    return (
+        np.array([_fp_quad(1, e) for e in _PROJ_ETA_GRID]),
+        np.array([_fp_quad(2, e) for e in _PROJ_ETA_GRID]),
+    )
 
 
 def _load_projected_tables():
     try:
         if os.path.exists(_PROJ_CACHE_FILE):
             z = np.load(_PROJ_CACHE_FILE)
-            if (z["eta"].shape == _PROJ_ETA_GRID.shape and
-                    np.allclose(z["eta"], _PROJ_ETA_GRID)):
+            if z["eta"].shape == _PROJ_ETA_GRID.shape and np.allclose(
+                z["eta"], _PROJ_ETA_GRID
+            ):
                 return z["f1"], z["f2"]
     except Exception:
         pass
     f1_tab, f2_tab = _build_projected_tables()
     try:
-        np.savez_compressed(_PROJ_CACHE_FILE, eta=_PROJ_ETA_GRID,
-                            f1=f1_tab, f2=f2_tab)
+        np.savez_compressed(_PROJ_CACHE_FILE, eta=_PROJ_ETA_GRID, f1=f1_tab, f2=f2_tab)
     except OSError:
         pass
     return f1_tab, f2_tab
@@ -116,17 +132,15 @@ def f1(eta):
     """Projected correction f_p^(1); diagnostic marginal only."""
     e = np.abs(np.asarray(eta, dtype=float))
     out = np.interp(e, _PROJ_ETA_GRID, _F1_TAB)
-    return np.where(e > _ETA_MAX,
-                    _F1_ASYMPTOTE_C / np.maximum(e, 1e-12) ** 3, out)
+    return np.where(e > _ETA_MAX, _F1_ASYMPTOTE_C / np.maximum(e, 1e-12) ** 3, out)
 
 
 def f2(eta):
     """Projected correction f_p^(2); diagnostic marginal only."""
     e = np.abs(np.asarray(eta, dtype=float))
     out = np.interp(e, _PROJ_ETA_GRID, _F2_TAB)
-    c2 = _F2_TAB[-1] * _ETA_MAX ** 4
-    return np.where(e > _ETA_MAX,
-                    c2 / np.maximum(e, 1e-12) ** 4, out)
+    c2 = _F2_TAB[-1] * _ETA_MAX**4
+    return np.where(e > _ETA_MAX, c2 / np.maximum(e, 1e-12) ** 4, out)
 
 
 # ============================================================================
@@ -137,34 +151,42 @@ def f2(eta):
 # Rutherford term is already in its analytic Phi1 -> 2/eta^4 regime and
 # dominates the n=2 correction by orders of magnitude.
 _RADIAL_ETA_MAX = 30.0
-_RADIAL_TABLE_GRID = np.unique(np.concatenate([
-    np.linspace(0.0, 10.0, 1001),
-    np.geomspace(10.0, _RADIAL_ETA_MAX, 500),
-]))
-_RADIAL_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                  "_fn_radial.npz")
+_RADIAL_TABLE_GRID = np.unique(
+    np.concatenate(
+        [
+            np.linspace(0.0, 10.0, 1001),
+            np.geomspace(10.0, _RADIAL_ETA_MAX, 500),
+        ]
+    )
+)
+_RADIAL_CACHE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "_fn_radial.npz"
+)
 
 # Dense integration grid used for CDFs and moments.  The direct-Hankel table
 # is interpolated onto this grid; no 2-D Cartesian factorization is involved.
-_RADIAL_INT_GRID = np.unique(np.concatenate([
-    np.linspace(0.0, 10.0, 5001),
-    np.geomspace(10.0, _RADIAL_ETA_MAX, 1500),
-]))
+_RADIAL_INT_GRID = np.unique(
+    np.concatenate(
+        [
+            np.linspace(0.0, 10.0, 5001),
+            np.geomspace(10.0, _RADIAL_ETA_MAX, 1500),
+        ]
+    )
+)
 
 
 def _phi_quad(n, eta):
     """Radial Phi^(n)(eta) from the manuscript's Hankel-J0 integral."""
+
     def integrand(u):
         if u <= 0.0:
             return 0.0
         a = 0.25 * u * u
-        return (u * j0(eta * u) * np.exp(-a) *
-                (a * np.log(a)) ** n / factorial(n))
+        return u * j0(eta * u) * np.exp(-a) * (a * np.log(a)) ** n / factorial(n)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", IntegrationWarning)
-        v, _ = quad(integrand, 0.0, 30.0, limit=1000,
-                    epsabs=1e-12, epsrel=1e-10)
+        v, _ = quad(integrand, 0.0, 30.0, limit=1000, epsabs=1e-12, epsrel=1e-10)
     return v
 
 
@@ -178,22 +200,24 @@ def _load_radial_tables():
     try:
         if os.path.exists(_RADIAL_CACHE_FILE):
             z = np.load(_RADIAL_CACHE_FILE)
-            if (z["eta"].shape == _RADIAL_TABLE_GRID.shape and
-                    np.allclose(z["eta"], _RADIAL_TABLE_GRID)):
+            if z["eta"].shape == _RADIAL_TABLE_GRID.shape and np.allclose(
+                z["eta"], _RADIAL_TABLE_GRID
+            ):
                 return z["phi1"], z["phi2"]
     except Exception:
         pass
     p1, p2 = _build_radial_tables()
     try:
-        np.savez_compressed(_RADIAL_CACHE_FILE, eta=_RADIAL_TABLE_GRID,
-                            phi1=p1, phi2=p2)
+        np.savez_compressed(
+            _RADIAL_CACHE_FILE, eta=_RADIAL_TABLE_GRID, phi1=p1, phi2=p2
+        )
     except OSError:
         pass
     return p1, p2
 
 
 _PHI1_TAB, _PHI2_TAB = _load_radial_tables()
-_PHI2_TAIL_C = _PHI2_TAB[-1] * _RADIAL_ETA_MAX ** 6
+_PHI2_TAIL_C = _PHI2_TAB[-1] * _RADIAL_ETA_MAX**6
 
 
 def phi0(eta):
@@ -247,8 +271,7 @@ def radial_density(theta, chi_c2, B, nmax=2, clip=True):
 def radial_magnitude_density(theta, chi_c2, B, nmax=2, normalize=True):
     """Magnitude density h(Theta)=2*pi*Theta*P_M(Theta)."""
     theta = np.asarray(theta, dtype=float)
-    h = 2.0 * np.pi * theta * radial_density(theta, chi_c2, B,
-                                              nmax=nmax, clip=True)
+    h = 2.0 * np.pi * theta * radial_density(theta, chi_c2, B, nmax=nmax, clip=True)
     if normalize:
         norm, _ = radial_total_mass(B, nmax=nmax)
         h = h / norm
@@ -283,7 +306,7 @@ def _radial_mass_cached(B_key, nmax):
     neg_grid = float(_trapz(q_neg, eta))
     # For n>=1 the far tail is Rutherford: q(eta) -> 2/(B eta^3),
     # whose integral from eta_max to infinity is 1/(B eta_max^2).
-    tail_mass = (1.0 / (B * _RADIAL_ETA_MAX ** 2)) if nmax >= 1 else 0.0
+    tail_mass = (1.0 / (B * _RADIAL_ETA_MAX**2)) if nmax >= 1 else 0.0
     total = mass_grid + tail_mass
     raw_total = raw_grid + tail_mass
     clipped_fraction = neg_grid / max(raw_total, 1e-30)
@@ -316,16 +339,16 @@ def radial_moments(chi_c2, B, cut, nmax=2):
             eg = np.append(eg, eta_cut)
         G = radial_series_eta(eg, B, nmax=nmax, clip=True)
         mass = float(_trapz(eg * G, eg))
-        n2 = float(_trapz(eg ** 3 * G, eg))
-        n4 = float(_trapz(eg ** 5 * G, eg))
+        n2 = float(_trapz(eg**3 * G, eg))
+        n4 = float(_trapz(eg**5 * G, eg))
     else:
         # Integrate tabulated region, then use the Rutherford Phi1 tail.
         eg = _RADIAL_INT_GRID
         G = radial_series_eta(eg, B, nmax=nmax, clip=True)
         e0 = _RADIAL_ETA_MAX
         mass = float(_trapz(eg * G, eg))
-        n2 = float(_trapz(eg ** 3 * G, eg))
-        n4 = float(_trapz(eg ** 5 * G, eg))
+        n2 = float(_trapz(eg**3 * G, eg))
+        n4 = float(_trapz(eg**5 * G, eg))
         if nmax >= 1:
             # q=2/(B eta^3)
             mass += (1.0 / B) * (1.0 / e0**2 - 1.0 / eta_cut**2)
@@ -336,7 +359,7 @@ def radial_moments(chi_c2, B, cut, nmax=2):
         return 0.0, 0.0, 0.0
     Fc = min(max(mass / total_mass, 0.0), 1.0)
     M2 = s * s * (n2 / mass)
-    M4 = s ** 4 * (n4 / mass)
+    M4 = s**4 * (n4 / mass)
     return Fc, M2, M4
 
 
@@ -358,6 +381,7 @@ def radial_cdf_eta(B, nmax=2):
 # Material/path parameters
 # ============================================================================
 
+
 def chi_c2_single(Z, A, X, p_mev, beta):
     """Manuscript Eq. (chi_c). X in g cm^-2, p in MeV/c."""
     return 0.157 * Z * (Z + 1.0) * X / A / (p_mev * beta) ** 2
@@ -365,8 +389,9 @@ def chi_c2_single(Z, A, X, p_mev, beta):
 
 def chi_a2_single(Z, p_mev, beta):
     """Manuscript Eq. (chi_a). p in MeV/c; projectile charge z=1."""
-    return (2.007e-5 * Z ** (2.0 / 3.0)
-            * (1.0 + 3.34 * (Z * ALPHA / beta) ** 2) / p_mev ** 2)
+    return (
+        2.007e-5 * Z ** (2.0 / 3.0) * (1.0 + 3.34 * (Z * ALPHA / beta) ** 2) / p_mev**2
+    )
 
 
 def combine_path(X_al, X_cu, X_pb, p_gev):
@@ -435,7 +460,7 @@ def pdf_on_grid(chi_c2, B, nmax=2):
     if nmax >= 1:
         F = F + f1(eta) / B
     if nmax >= 2:
-        F = F + f2(eta) / B ** 2
+        F = F + f2(eta) / B**2
     F = F / s
     raw_norm = _trapz(F, _THETA_GRID)
     neg = np.clip(-F, 0.0, None)
@@ -459,6 +484,7 @@ def cdf_on_grid(chi_c2, B, nmax=2):
 # Radial event sampler
 # ============================================================================
 
+
 class MoliereSampler:
     """Sample the radial 2-D Moliere distribution, then a uniform azimuth.
 
@@ -473,10 +499,12 @@ class MoliereSampler:
         self.max_clipped = 0.0
 
     def _key(self, p, X_al, X_cu, X_pb):
-        return (round(p / P_CACHE_STEP),
-                round(X_al / X_CACHE_STEP),
-                round(X_cu / X_CACHE_STEP),
-                round(X_pb / X_CACHE_STEP))
+        return (
+            round(p / P_CACHE_STEP),
+            round(X_al / X_CACHE_STEP),
+            round(X_cu / X_CACHE_STEP),
+            round(X_pb / X_CACHE_STEP),
+        )
 
     def _get(self, key):
         if key in self._cache:
@@ -494,6 +522,7 @@ class MoliereSampler:
         # imports this module at module scope, so importing it there would
         # be circular.
         from energy_loss import accumulate_moliere, ordered_path, slice_path
+
         t_al = X_al / MATERIALS["Al"]["rho"]
         t_cu = X_cu / MATERIALS["Cu"]["rho"]
         t_pb = X_pb / MATERIALS["Pb"]["rho"]
@@ -548,9 +577,9 @@ class MoliereSampler:
                 # Conditional Rutherford tail q(eta) proportional eta^-3
                 # for eta >= eta0: CDF = 1-(eta0/eta)^2.
                 r = (u[~core] - cdf_end) / max(1.0 - cdf_end, 1e-30)
-                eta[~core] = (_RADIAL_ETA_MAX /
-                              np.sqrt(np.maximum(1.0 - r,
-                                                 np.finfo(float).tiny)))
+                eta[~core] = _RADIAL_ETA_MAX / np.sqrt(
+                    np.maximum(1.0 - r, np.finfo(float).tiny)
+                )
 
             theta = scale * eta
             az = rng.uniform(0.0, 2.0 * np.pi, idx.size)
@@ -559,4 +588,3 @@ class MoliereSampler:
             i = j
 
         return tx, ty
-        

@@ -24,12 +24,14 @@ math, fixed colorblind-safe palette, PDF (vector) + PNG (preview) output.
 Usage:
     python3 plot_geant4_analysis.py [--outdir figs]
 """
+
 import argparse
 import math
 import os
 
 import numpy as np
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -39,23 +41,32 @@ from kinematics import theta0_highland, theta_space_highland
 from eps_quadrature import eps_M, efficiency, optimal_k, _theta_rms_disc
 
 # ---------------------------------------------------------------- style
-plt.rcParams.update({
-    "font.family": "serif",
-    "font.serif": ["Computer Modern Roman", "DejaVu Serif", "Times New Roman"],
-    "mathtext.fontset": "cm",
-    "font.size": 10,
-    "axes.titlesize": 10,
-    "axes.labelsize": 10,
-    "xtick.labelsize": 9,
-    "ytick.labelsize": 9,
-    "legend.fontsize": 8.5,
-    "figure.dpi": 150,
-    "savefig.dpi": 300,
-    "axes.linewidth": 0.8,
-})
-COLORS = {"axial": "#0072B2", "cu_short": "#D55E00", "urban": "#0072B2",
-         "wentzel": "#E69F00", "1.0": "#0072B2", "2.0": "#009E73",
-         "3.5": "#D55E00", "6.0": "#CC79A7"}
+plt.rcParams.update(
+    {
+        "font.family": "serif",
+        "font.serif": ["Computer Modern Roman", "DejaVu Serif", "Times New Roman"],
+        "mathtext.fontset": "cm",
+        "font.size": 10,
+        "axes.titlesize": 10,
+        "axes.labelsize": 10,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+        "legend.fontsize": 8.5,
+        "figure.dpi": 150,
+        "savefig.dpi": 300,
+        "axes.linewidth": 0.8,
+    }
+)
+COLORS = {
+    "axial": "#0072B2",
+    "cu_short": "#D55E00",
+    "urban": "#0072B2",
+    "wentzel": "#E69F00",
+    "1.0": "#0072B2",
+    "2.0": "#009E73",
+    "3.5": "#D55E00",
+    "6.0": "#CC79A7",
+}
 PANEL_LABELS = "abcdefghij"
 THETA_CUT = 0.200
 
@@ -67,8 +78,16 @@ def _save(fig, outdir, name):
 
 
 def _panel_label(ax, letter):
-    ax.text(-0.02, 1.05, f"({letter})", transform=ax.transAxes,
-           fontsize=11, fontweight="bold", va="bottom", ha="right")
+    ax.text(
+        -0.02,
+        1.05,
+        f"({letter})",
+        transform=ax.transAxes,
+        fontsize=11,
+        fontweight="bold",
+        va="bottom",
+        ha="right",
+    )
 
 
 # ---------------------------------------------------------------- Fig 1: eps_M(p)
@@ -80,7 +99,11 @@ def fig_epsM_vs_p(outdir):
     def eps_curve(path):
         out = []
         for p in p_grid:
-            X_al = MATERIALS.get("Al", {}).get("rho", 0.0) if any(m == "Al" for m, _ in path) else 0.0
+            X_al = (
+                MATERIALS.get("Al", {}).get("rho", 0.0)
+                if any(m == "Al" for m, _ in path)
+                else 0.0
+            )
             X_cu = X_al2 = 0.0
             Xs = {"Al": 0.0, "Cu": 0.0, "Pb": 0.0}
             for m, t in path:
@@ -94,22 +117,36 @@ def fig_epsM_vs_p(outdir):
 
     fig, ax = plt.subplots(figsize=(4.2, 3.4))
     fig.subplots_adjust(left=0.15, right=0.97, top=0.93, bottom=0.15)
-    ax.plot(p_grid, eps_axial, "-", color=COLORS["axial"], lw=1.6,
-           label=r"axial (Al 10 cm + Cu 15 cm, $x/X_0=11.54$)")
-    ax.plot(p_grid, eps_cu, "-", color=COLORS["cu_short"], lw=1.6,
-           label=r"Cu-only, 3 cm ($x/X_0=2.08$)")
+    ax.plot(
+        p_grid,
+        eps_axial,
+        "-",
+        color=COLORS["axial"],
+        lw=1.6,
+        label=r"axial (Al 10 cm + Cu 15 cm, $x/X_0=11.54$)",
+    )
+    ax.plot(
+        p_grid,
+        eps_cu,
+        "-",
+        color=COLORS["cu_short"],
+        lw=1.6,
+        label=r"Cu-only, 3 cm ($x/X_0=2.08$)",
+    )
     ax.axhline(0, color="gray", lw=0.6)
     ax.set_xlabel(r"$p$ (GeV$/c$)")
     ax.set_ylabel(r"$\varepsilon_M$ (%)")
     ax.legend(frameon=False, fontsize=7.5, loc="upper left")
     _save(fig, outdir, "epsM_vs_p")
-    print("\n[epsM_vs_p] suggested caption:\n"
-         r"  $\varepsilon_M(p)$ from the deterministic quadrature (Eq. 8), "
-         r"at the fixed $200$\,mrad acceptance, for the axial reference path "
-         r"and a short Cu-only path. The path-length dependence "
-         r"(axial vs.\ Cu-only) is "
-         r"comparable in size to the momentum dependence, confirming that a "
-         r"momentum-only correction cannot remove $\varepsilon_M$.")
+    print(
+        "\n[epsM_vs_p] suggested caption:\n"
+        r"  $\varepsilon_M(p)$ from the deterministic quadrature (Eq. 8), "
+        r"at the fixed $200$\,mrad acceptance, for the axial reference path "
+        r"and a short Cu-only path. The path-length dependence "
+        r"(axial vs.\ Cu-only) is "
+        r"comparable in size to the momentum dependence, confirming that a "
+        r"momentum-only correction cannot remove $\varepsilon_M$."
+    )
 
 
 # ---------------------------------------------------------------- Fig 2: eta(k)
@@ -124,31 +161,41 @@ def fig_eta_vs_k(outdir):
     fig.subplots_adjust(left=0.15, right=0.97, top=0.93, bottom=0.15)
     kmax_all, etamax_all = [], []
     linestyles = ["-", "--", "-.", ":"]
-    for (p, ls) in zip((1.0, 2.0, 3.5, 6.0), linestyles):
-        etas = np.array([efficiency(p, Xs["Al"], Xs["Cu"], Xs["Pb"], k)
-                        for k in k_grid])
-        ax.plot(k_grid, etas, ls, lw=1.6, color=COLORS[str(p)],
-               label=fr"$p={p:g}$ GeV$/c$")
+    for p, ls in zip((1.0, 2.0, 3.5, 6.0), linestyles):
+        etas = np.array(
+            [efficiency(p, Xs["Al"], Xs["Cu"], Xs["Pb"], k) for k in k_grid]
+        )
+        ax.plot(
+            k_grid, etas, ls, lw=1.6, color=COLORS[str(p)], label=rf"$p={p:g}$ GeV$/c$"
+        )
         i = int(np.argmax(etas))
-        kmax_all.append(k_grid[i]); etamax_all.append(etas[i])
+        kmax_all.append(k_grid[i])
+        etamax_all.append(etas[i])
     k_opt_mean = float(np.mean(kmax_all))
     eta_max_mean = float(np.mean(etamax_all))
     # Mark each model/path-specific numerical optimum rather than imposing a
     # universal manuscript constant.
     for p, kval in zip((1.0, 2.0, 3.5, 6.0), kmax_all):
-        ax.plot([kval], [efficiency(p, Xs["Al"], Xs["Cu"], Xs["Pb"], kval)],
-                "o", ms=3.5, color=COLORS[str(p)])
+        ax.plot(
+            [kval],
+            [efficiency(p, Xs["Al"], Xs["Cu"], Xs["Pb"], kval)],
+            "o",
+            ms=3.5,
+            color=COLORS[str(p)],
+        )
     ax.set_xlabel(r"$k = \theta_{\mathrm{cut}}/\theta_0$")
     ax.set_ylabel(r"$\eta(k)$")
     ax.legend(frameon=False, fontsize=7.5, loc="lower right")
     _save(fig, outdir, "eta_vs_k")
-    print("\n[eta_vs_k] suggested caption:\n"
-         r"  Per-event imaging efficiency $\eta(k)$ (Eq. 14) vs.\ reduced "
-         r"acceptance $k=\theta_{\mathrm{cut}}/\theta_0$, axial path, at "
-         fr"four momenta. For this particular axial reference path the "
-         fr"numerical peaks cluster near $k\approx{k_opt_mean:.2f}$ and "
-         fr"$\eta_{{\max}}\approx{eta_max_mean:.3f}$; the code does not "
-         r"promote this value to a universal constant.")
+    print(
+        "\n[eta_vs_k] suggested caption:\n"
+        r"  Per-event imaging efficiency $\eta(k)$ (Eq. 14) vs.\ reduced "
+        r"acceptance $k=\theta_{\mathrm{cut}}/\theta_0$, axial path, at "
+        rf"four momenta. For this particular axial reference path the "
+        rf"numerical peaks cluster near $k\approx{k_opt_mean:.2f}$ and "
+        rf"$\eta_{{\max}}\approx{eta_max_mean:.3f}$; the code does not "
+        r"promote this value to a universal constant."
+    )
 
 
 # ------------------------------------------------------- Fig 3: Geant4 vs ln(eta_cut)
@@ -158,22 +205,38 @@ def fig_eta_vs_k(outdir):
 # (Sec. 7). eta_cut = 200mrad / theta0 = 200mrad / (theta_space/sqrt2).
 GEANT4_SWEEP = [
     # material, thickness_cm, p, model, theta_space_mrad, frac_diff_pct
-    ("Cu", 15.0, 1.0, "urban",   68.006,  3.77), ("Cu", 15.0, 1.0, "wentzel", 68.006,  3.57),
-    ("Cu", 15.0, 2.0, "urban",   33.852, -4.11), ("Cu", 15.0, 2.0, "wentzel", 33.852, -4.40),
-    ("Cu", 15.0, 3.5, "urban",   19.325, -8.63), ("Cu", 15.0, 3.5, "wentzel", 19.325, -8.60),
-    ("Cu", 15.0, 6.0, "urban",   11.269,-11.95), ("Cu", 15.0, 6.0, "wentzel", 11.269,-11.95),
-    ("Cu",  3.0, 1.0, "urban",   28.706, -5.44), ("Cu",  3.0, 1.0, "wentzel", 28.706, -5.28),
-    ("Cu",  3.0, 2.0, "urban",   14.289, -8.70), ("Cu",  3.0, 2.0, "wentzel", 14.289, -8.62),
-    ("Cu",  3.0, 3.5, "urban",    8.157,-11.26), ("Cu",  3.0, 3.5, "wentzel",  8.157,-11.24),
-    ("Cu",  3.0, 6.0, "urban",    4.757,-13.53), ("Cu",  3.0, 6.0, "wentzel",  4.757,-13.71),
-    ("Pb",  2.0, 1.0, "urban",   38.333, -5.71), ("Pb",  2.0, 1.0, "wentzel", 38.333, -5.89),
-    ("Pb",  2.0, 2.0, "urban",   19.081, -9.72), ("Pb",  2.0, 2.0, "wentzel", 19.081, -9.75),
-    ("Pb",  2.0, 3.5, "urban",   10.893,-12.79), ("Pb",  2.0, 3.5, "wentzel", 10.893,-12.68),
-    ("Pb",  2.0, 6.0, "urban",    6.352,-14.95), ("Pb",  2.0, 6.0, "wentzel",  6.352,-15.15),
-    ("Pb",  8.0, 1.0, "urban",   80.517, -0.72), ("Pb",  8.0, 1.0, "wentzel", 80.517, -0.85),
-    ("Pb",  8.0, 2.0, "urban",   40.080, -7.39), ("Pb",  8.0, 2.0, "wentzel", 40.080, -7.40),
-    ("Pb",  8.0, 3.5, "urban",   22.880,-11.35), ("Pb",  8.0, 3.5, "wentzel", 22.880,-11.26),
-    ("Pb",  8.0, 6.0, "urban",   13.342,-14.21), ("Pb",  8.0, 6.0, "wentzel", 13.342,-14.15),
+    ("Cu", 15.0, 1.0, "urban", 68.006, 3.77),
+    ("Cu", 15.0, 1.0, "wentzel", 68.006, 3.57),
+    ("Cu", 15.0, 2.0, "urban", 33.852, -4.11),
+    ("Cu", 15.0, 2.0, "wentzel", 33.852, -4.40),
+    ("Cu", 15.0, 3.5, "urban", 19.325, -8.63),
+    ("Cu", 15.0, 3.5, "wentzel", 19.325, -8.60),
+    ("Cu", 15.0, 6.0, "urban", 11.269, -11.95),
+    ("Cu", 15.0, 6.0, "wentzel", 11.269, -11.95),
+    ("Cu", 3.0, 1.0, "urban", 28.706, -5.44),
+    ("Cu", 3.0, 1.0, "wentzel", 28.706, -5.28),
+    ("Cu", 3.0, 2.0, "urban", 14.289, -8.70),
+    ("Cu", 3.0, 2.0, "wentzel", 14.289, -8.62),
+    ("Cu", 3.0, 3.5, "urban", 8.157, -11.26),
+    ("Cu", 3.0, 3.5, "wentzel", 8.157, -11.24),
+    ("Cu", 3.0, 6.0, "urban", 4.757, -13.53),
+    ("Cu", 3.0, 6.0, "wentzel", 4.757, -13.71),
+    ("Pb", 2.0, 1.0, "urban", 38.333, -5.71),
+    ("Pb", 2.0, 1.0, "wentzel", 38.333, -5.89),
+    ("Pb", 2.0, 2.0, "urban", 19.081, -9.72),
+    ("Pb", 2.0, 2.0, "wentzel", 19.081, -9.75),
+    ("Pb", 2.0, 3.5, "urban", 10.893, -12.79),
+    ("Pb", 2.0, 3.5, "wentzel", 10.893, -12.68),
+    ("Pb", 2.0, 6.0, "urban", 6.352, -14.95),
+    ("Pb", 2.0, 6.0, "wentzel", 6.352, -15.15),
+    ("Pb", 8.0, 1.0, "urban", 80.517, -0.72),
+    ("Pb", 8.0, 1.0, "wentzel", 80.517, -0.85),
+    ("Pb", 8.0, 2.0, "urban", 40.080, -7.39),
+    ("Pb", 8.0, 2.0, "wentzel", 40.080, -7.40),
+    ("Pb", 8.0, 3.5, "urban", 22.880, -11.35),
+    ("Pb", 8.0, 3.5, "wentzel", 22.880, -11.26),
+    ("Pb", 8.0, 6.0, "urban", 13.342, -14.21),
+    ("Pb", 8.0, 6.0, "wentzel", 13.342, -14.15),
 ]
 
 
@@ -184,9 +247,11 @@ def fig_geant4_discrepancy(outdir):
         theta0_mrad = tspace_mrad / math.sqrt(2.0)
         eta_cut = (THETA_CUT * 1e3) / theta0_mrad
         if model == "urban":
-            eta_urban.append(eta_cut); fd_urban.append(fd)
+            eta_urban.append(eta_cut)
+            fd_urban.append(fd)
         else:
-            eta_wentzel.append(eta_cut); fd_wentzel.append(fd)
+            eta_wentzel.append(eta_cut)
+            fd_wentzel.append(fd)
     eta_urban, fd_urban = np.array(eta_urban), np.array(fd_urban)
     eta_wentzel, fd_wentzel = np.array(eta_wentzel), np.array(fd_wentzel)
 
@@ -197,10 +262,26 @@ def fig_geant4_discrepancy(outdir):
 
     fig, ax = plt.subplots(figsize=(4.4, 3.6))
     fig.subplots_adjust(left=0.16, right=0.97, top=0.93, bottom=0.15)
-    ax.scatter(eta_urban, fd_urban, marker="o", s=32, facecolors="none",
-              edgecolors=COLORS["urban"], linewidths=1.3, label="Urban")
-    ax.scatter(eta_wentzel, fd_wentzel, marker="^", s=32, facecolors="none",
-              edgecolors=COLORS["wentzel"], linewidths=1.3, label="Wentzel-VI")
+    ax.scatter(
+        eta_urban,
+        fd_urban,
+        marker="o",
+        s=32,
+        facecolors="none",
+        edgecolors=COLORS["urban"],
+        linewidths=1.3,
+        label="Urban",
+    )
+    ax.scatter(
+        eta_wentzel,
+        fd_wentzel,
+        marker="^",
+        s=32,
+        facecolors="none",
+        edgecolors=COLORS["wentzel"],
+        linewidths=1.3,
+        label="Wentzel-VI",
+    )
     xx = np.linspace(all_ln_eta.min(), all_ln_eta.max(), 50)
     ax.plot(np.exp(xx), np.polyval(coef, xx), "-", color="black", lw=1.0, zorder=1)
     ax.set_xscale("log")
@@ -208,19 +289,28 @@ def fig_geant4_discrepancy(outdir):
     ax.set_xlabel(r"$\eta_{\mathrm{cut}} = \theta_{\mathrm{cut}}/\theta_0$")
     ax.set_ylabel(r"(Geant4 $-$ quad)/quad (%)")
     ax.legend(frameon=False, fontsize=8, loc="lower left")
-    ax.text(0.97, 0.95, fr"$r={r:.2f}$", transform=ax.transAxes,
-           ha="right", va="top", fontsize=9)
+    ax.text(
+        0.97,
+        0.95,
+        rf"$r={r:.2f}$",
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=9,
+    )
     _save(fig, outdir, "geant4_discrepancy")
     print(f"\n[geant4_discrepancy] recomputed r = {r:.3f} (paper: -0.89)")
-    print("[geant4_discrepancy] suggested caption:\n"
-         r"  Fractional disagreement between Geant4-measured and quadrature-"
-         r"predicted $\theta_{\mathrm{RMS}}$, vs.\ the reduced acceptance "
-         fr"$\eta_{{\mathrm{{cut}}}}$ (log scale), for all 32 configurations "
-         r"(Cu/Pb, two thicknesses, four momenta, Urban and Wentzel-VI). "
-         fr"The two models track each other closely at fixed $\eta_{{\mathrm{{cut}}}}$"
-         fr" ($r={r:.2f}$ with $\ln\eta_{{\mathrm{{cut}}}}$ across all 32 points), "
-         r"consistent with the truncated Moli\`ere series' asymptotic (non-"
-         r"convergent) tail rather than Geant4 model uncertainty.")
+    print(
+        "[geant4_discrepancy] suggested caption:\n"
+        r"  Fractional disagreement between Geant4-measured and quadrature-"
+        r"predicted $\theta_{\mathrm{RMS}}$, vs.\ the reduced acceptance "
+        rf"$\eta_{{\mathrm{{cut}}}}$ (log scale), for all 32 configurations "
+        r"(Cu/Pb, two thicknesses, four momenta, Urban and Wentzel-VI). "
+        rf"The two models track each other closely at fixed $\eta_{{\mathrm{{cut}}}}$"
+        rf" ($r={r:.2f}$ with $\ln\eta_{{\mathrm{{cut}}}}$ across all 32 points), "
+        r"consistent with the truncated Moli\`ere series' asymptotic (non-"
+        r"convergent) tail rather than Geant4 model uncertainty."
+    )
 
 
 # ------------------------------------------------------- Fig 4: log-law panels
@@ -239,8 +329,7 @@ def fig_logscale_theta_rms(outdir):
         B = ml.solve_B(chi_c2, chi_a2)
         theta0 = theta0_highland(p, xX0)
         cuts = np.linspace(3 * theta0, 25 * theta0, 14)
-        rms2 = np.array([_theta_rms_disc(chi_c2, chi_a2, B, cut=c) ** 2
-                        for c in cuts])
+        rms2 = np.array([_theta_rms_disc(chi_c2, chi_a2, B, cut=c) ** 2 for c in cuts])
         ln_cut = np.log(cuts)
         coef = np.polyfit(ln_cut, rms2, 1)
         pred = np.polyval(coef, ln_cut)
@@ -249,18 +338,20 @@ def fig_logscale_theta_rms(outdir):
         r2 = 1 - ss_res / ss_tot
         ax.plot(ln_cut, rms2 * 1e6, "o", ms=3.5, color=COLORS[str(p)])
         ax.plot(ln_cut, pred * 1e6, "-", color="black", lw=1.0)
-        ax.set_title(fr"$p={p:g}$ GeV$/c$, $R^2={r2:.3f}$", fontsize=9)
+        ax.set_title(rf"$p={p:g}$ GeV$/c$, $R^2={r2:.3f}$", fontsize=9)
         ax.set_xlabel(r"$\ln\theta_{\mathrm{cut}}$")
         if i == 0:
             ax.set_ylabel(r"$\theta_{\mathrm{RMS}}^2$ (mrad$^2$)")
         _panel_label(ax, PANEL_LABELS[i])
     _save(fig, outdir, "theta_rms_loglaw")
-    print("\n[theta_rms_loglaw] suggested caption:\n"
-         r"  $\theta_{\mathrm{RMS}}^2(\theta_{\mathrm{cut}})$ vs.\ "
-         r"$\ln\theta_{\mathrm{cut}}$ (points) with a linear fit (line), "
-         r"axial path, over $\theta_{\mathrm{cut}}\in[3\theta_0,25\theta_0]$, "
-         r"confirming the asymptotic $\sqrt{\ln\theta_{\mathrm{cut}}}$ "
-         r"scaling of Eq.\ (7) at each momentum.")
+    print(
+        "\n[theta_rms_loglaw] suggested caption:\n"
+        r"  $\theta_{\mathrm{RMS}}^2(\theta_{\mathrm{cut}})$ vs.\ "
+        r"$\ln\theta_{\mathrm{cut}}$ (points) with a linear fit (line), "
+        r"axial path, over $\theta_{\mathrm{cut}}\in[3\theta_0,25\theta_0]$, "
+        r"confirming the asymptotic $\sqrt{\ln\theta_{\mathrm{cut}}}$ "
+        r"scaling of Eq.\ (7) at each momentum."
+    )
 
 
 # ------------------------------------------------------- Fig 5: core vs tail sketch
@@ -284,28 +375,51 @@ def fig_moliere_sketch(outdir):
 
     fig, ax = plt.subplots(figsize=(4.4, 3.6))
     fig.subplots_adjust(left=0.16, right=0.97, top=0.93, bottom=0.15)
-    ax.loglog(theta_mrad, P_core, "--", color="gray", lw=1.3,
-             label=r"Gaussian radial core, $\Phi^{(0)}$ only")
-    ax.loglog(theta_mrad, P_full, "-", color=COLORS["axial"], lw=1.6,
-             label=r"radial $n\leq2$ series")
-    ax.loglog(theta_mrad, P_tail, ":", color="black", lw=1.1,
-             label=r"$\chi_c^2/(\pi\Theta^4)$")
+    ax.loglog(
+        theta_mrad,
+        P_core,
+        "--",
+        color="gray",
+        lw=1.3,
+        label=r"Gaussian radial core, $\Phi^{(0)}$ only",
+    )
+    ax.loglog(
+        theta_mrad,
+        P_full,
+        "-",
+        color=COLORS["axial"],
+        lw=1.6,
+        label=r"radial $n\leq2$ series",
+    )
+    ax.loglog(
+        theta_mrad,
+        P_tail,
+        ":",
+        color="black",
+        lw=1.1,
+        label=r"$\chi_c^2/(\pi\Theta^4)$",
+    )
     ax.set_xlabel(r"$\Theta$ (mrad)")
     ax.set_ylabel(r"$P_M(\Theta)$ (rad$^{-2}$)")
     ax.legend(frameon=False, fontsize=8, loc="lower left")
     _save(fig, outdir, "moliere_radial_sketch")
-    print("\n[moliere_radial_sketch] suggested caption:\n"
-          r"  Radial two-dimensional Moli\`ere density for the axial path at "
-          r"$p=2$ GeV$/c$. The full $n\le2$ series leaves the Gaussian core "
-          r"and approaches the Rutherford $\Theta^{-4}$ areal-density tail; "
-          r"the corresponding magnitude density scales as $\Theta^{-3}$.")
+    print(
+        "\n[moliere_radial_sketch] suggested caption:\n"
+        r"  Radial two-dimensional Moli\`ere density for the axial path at "
+        r"$p=2$ GeV$/c$. The full $n\le2$ series leaves the Gaussian core "
+        r"and approaches the Rutherford $\Theta^{-4}$ areal-density tail; "
+        r"the corresponding magnitude density scales as $\Theta^{-3}$."
+    )
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--outdir", default="figs")
-    ap.add_argument("--include-legacy-geant4-sweep", action="store_true",
-                    help="Plot the embedded legacy sweep; not manuscript-validated.")
+    ap.add_argument(
+        "--include-legacy-geant4-sweep",
+        action="store_true",
+        help="Plot the embedded legacy sweep; not manuscript-validated.",
+    )
     a = ap.parse_args()
     os.makedirs(a.outdir, exist_ok=True)
     fig_epsM_vs_p(a.outdir)

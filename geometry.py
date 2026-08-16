@@ -4,6 +4,7 @@ The key output is an ordered five-segment representation
 [Al_up, Cu_up, Pb, Cu_down, Al_down].  Energy loss depends on order, so the
 revised code never reconstructs p(X) from unordered material totals.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -102,7 +103,11 @@ def trace_paths(o, u, reference=False):
     seg = np.zeros((n, 5), float)  # Al_up, Cu_up, Pb, Cu_down, Al_down
     outer = np.isfinite(oa) & np.isfinite(ob)
     in_cu = np.isfinite(ca) & np.isfinite(cb)
-    in_pb = (np.isfinite(pa) & np.isfinite(pb)) if not reference else np.zeros(n, dtype=bool)
+    in_pb = (
+        (np.isfinite(pa) & np.isfinite(pb))
+        if not reference
+        else np.zeros(n, dtype=bool)
+    )
 
     # Rays missing the Cu block are pure Al.
     seg[outer & ~in_cu, 0] = ob[outer & ~in_cu] - oa[outer & ~in_cu]
@@ -129,20 +134,31 @@ def trace_paths(o, u, reference=False):
     t_pb = seg[:, 2]
     s_mid = np.where(outer, 0.5 * (oa + ob), 0.0)
     midpoint = o + s_mid[:, None] * u
-    return dict(segments=seg, t_Al=t_al, t_Cu=t_cu, t_Pb=t_pb,
-                s_entry=oa, s_exit=ob, midpoint=midpoint)
+    return dict(
+        segments=seg,
+        t_Al=t_al,
+        t_Cu=t_cu,
+        t_Pb=t_pb,
+        s_entry=oa,
+        s_exit=ob,
+        midpoint=midpoint,
+    )
 
 
 def x_over_x0(t_al, t_cu, t_pb):
-    return (np.asarray(t_al) / MATERIALS["Al"].X0 +
-            np.asarray(t_cu) / MATERIALS["Cu"].X0 +
-            np.asarray(t_pb) / MATERIALS["Pb"].X0)
+    return (
+        np.asarray(t_al) / MATERIALS["Al"].X0
+        + np.asarray(t_cu) / MATERIALS["Cu"].X0
+        + np.asarray(t_pb) / MATERIALS["Pb"].X0
+    )
 
 
 def areal_densities(t_al, t_cu, t_pb):
-    return (np.asarray(t_al) * MATERIALS["Al"].rho,
-            np.asarray(t_cu) * MATERIALS["Cu"].rho,
-            np.asarray(t_pb) * MATERIALS["Pb"].rho)
+    return (
+        np.asarray(t_al) * MATERIALS["Al"].rho,
+        np.asarray(t_cu) * MATERIALS["Cu"].rho,
+        np.asarray(t_pb) * MATERIALS["Pb"].rho,
+    )
 
 
 def truth_classes(trace):
@@ -150,5 +166,7 @@ def truth_classes(trace):
     return {
         "pb": trace["t_Pb"] > 1e-8,
         "cu_only": (trace["t_Cu"] > 1e-8) & (trace["t_Pb"] <= 1e-8),
-        "al_only": (trace["t_Cu"] <= 1e-8) & (trace["t_Pb"] <= 1e-8) & (trace["t_Al"] > 1e-8),
+        "al_only": (trace["t_Cu"] <= 1e-8)
+        & (trace["t_Pb"] <= 1e-8)
+        & (trace["t_Al"] > 1e-8),
     }

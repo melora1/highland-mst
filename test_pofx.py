@@ -27,6 +27,7 @@ Section B (the sampler patch in moliere.py) is validated separately by
 test_sampler_uses_pofx_accumulation, which requires the patched moliere.py
 and energy_loss.py to be importable.
 """
+
 import math
 
 import numpy as np
@@ -39,13 +40,15 @@ from eps_quadrature import eps_M as eps_M_constp, optimal_k
 from eps_quadrature_pofx import eps_M_mixed, eps_M_pofx, theta_RMS_pofx
 from kinematics import theta0_highland, theta_space_highland
 
-AXIAL = (10.0, 15.0, 0.0)     # t_Al, t_Cu, t_Pb  in cm
+AXIAL = (10.0, 15.0, 0.0)  # t_Al, t_Cu, t_Pb  in cm
 
 
 def _areal(t):
-    return (MATERIALS["Al"]["rho"] * t[0],
-            MATERIALS["Cu"]["rho"] * t[1],
-            MATERIALS["Pb"]["rho"] * t[2])
+    return (
+        MATERIALS["Al"]["rho"] * t[0],
+        MATERIALS["Cu"]["rho"] * t[1],
+        MATERIALS["Pb"]["rho"] * t[2],
+    )
 
 
 def _snap(X):
@@ -56,9 +59,11 @@ def _snap(X):
 def _snapped(t):
     """(thicknesses, areal densities) landing exactly on the bucket grid."""
     X = tuple(_snap(x) for x in _areal(t))
-    return (X[0] / MATERIALS["Al"]["rho"],
-            X[1] / MATERIALS["Cu"]["rho"],
-            X[2] / MATERIALS["Pb"]["rho"]), X
+    return (
+        X[0] / MATERIALS["Al"]["rho"],
+        X[1] / MATERIALS["Cu"]["rho"],
+        X[2] / MATERIALS["Pb"]["rho"],
+    ), X
 
 
 def _eps_M_exact(p, X_al, X_cu, X_pb, cut=THETA_CUT):
@@ -66,9 +71,11 @@ def _eps_M_exact(p, X_al, X_cu, X_pb, cut=THETA_CUT):
     c2, a2 = ml.combine_path(float(X_al), float(X_cu), float(X_pb), float(p))
     B = ml.solve_B(c2, a2)
     _, M2, _ = ml.radial_moments(c2, B, float(cut), nmax=2)
-    xx0 = (X_al / MATERIALS["Al"]["rho"] / MATERIALS["Al"]["X0"]
-           + X_cu / MATERIALS["Cu"]["rho"] / MATERIALS["Cu"]["X0"]
-           + X_pb / MATERIALS["Pb"]["rho"] / MATERIALS["Pb"]["X0"])
+    xx0 = (
+        X_al / MATERIALS["Al"]["rho"] / MATERIALS["Al"]["X0"]
+        + X_cu / MATERIALS["Cu"]["rho"] / MATERIALS["Cu"]["X0"]
+        + X_pb / MATERIALS["Pb"]["rho"] / MATERIALS["Pb"]["X0"]
+    )
     return math.sqrt(M2) / float(theta_space_highland(p, xx0)) - 1.0
 
 
@@ -91,14 +98,17 @@ def test_range_table_matches_rk4():
             h = X / n
             f = lambda Ei: -stopping.dedx_of_E(Ei, material) * 1e-3
             for _ in range(n):
-                k1 = f(E); k2 = f(E + 0.5 * h * k1)
-                k3 = f(E + 0.5 * h * k2); k4 = f(E + h * k3)
+                k1 = f(E)
+                k2 = f(E + 0.5 * h * k1)
+                k3 = f(E + 0.5 * h * k2)
+                k4 = f(E + h * k3)
                 E += (h / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
-            p_rk4 = math.sqrt(E * E - el.M_MU ** 2)
-            p_tab = math.sqrt(el.energy_after(math.hypot(p_in, el.M_MU),
-                                              material, X) ** 2 - el.M_MU ** 2)
-            assert abs(p_tab / p_rk4 - 1.0) < 1e-4, (material, p_in,
-                                                     p_tab, p_rk4)
+            p_rk4 = math.sqrt(E * E - el.M_MU**2)
+            p_tab = math.sqrt(
+                el.energy_after(math.hypot(p_in, el.M_MU), material, X) ** 2
+                - el.M_MU**2
+            )
+            assert abs(p_tab / p_rk4 - 1.0) < 1e-4, (material, p_in, p_tab, p_rk4)
 
 
 # --------------------------------------------------------- reduction
@@ -112,8 +122,7 @@ def test_constant_p_limit():
         el.energy_after = lambda E, m, X: E
         for p in (1.0, 6.0):
             r = el.calibrate(*AXIAL, p)
-            assert abs(r["eps_M"] - r["eps_M_0"]) < 1e-9, (
-                p, r["eps_M"], r["eps_M_0"])
+            assert abs(r["eps_M"] - r["eps_M_0"]) < 1e-9, (p, r["eps_M"], r["eps_M_0"])
             assert abs(r["th_space"] / r["th_space_0"] - 1.0) < 1e-12
             assert abs(r["chi_c2"] / r["chi_c2_0"] - 1.0) < 1e-12
     finally:
@@ -155,7 +164,8 @@ def test_areal_density_bucketing_bias_is_bounded_and_positive():
     """
     X = _areal(AXIAL)
     assert abs(_snap(X[1]) - X[1]) > 1e-9, (
-        "X_Cu now lands on the cache grid; this test's premise is gone")
+        "X_Cu now lands on the cache grid; this test's premise is gone"
+    )
     for p in MOMENTA:
         bias = 100.0 * (float(eps_M_constp(p, *X)[0]) - _eps_M_exact(p, *X))
         assert 0.02 < bias < 0.06, (p, bias)
@@ -205,8 +215,11 @@ def test_ordered_path_preserves_totals():
         tot[n] = tot.get(n, 0.0) + t
     for name, want in (("Al", 10.0), ("Cu", 15.0), ("Pb", 3.0)):
         assert abs(tot[name] - want) < 1e-12, (name, tot[name])
-    xx0 = (10.0 / MATERIALS["Al"]["X0"] + 15.0 / MATERIALS["Cu"]["X0"]
-           + 3.0 / MATERIALS["Pb"]["X0"])
+    xx0 = (
+        10.0 / MATERIALS["Al"]["X0"]
+        + 15.0 / MATERIALS["Cu"]["X0"]
+        + 3.0 / MATERIALS["Pb"]["X0"]
+    )
     assert abs(el.x_over_X0(path) - xx0) < 1e-12
 
 
@@ -241,8 +254,10 @@ def test_per_slice_highland_quadrature_is_too_small():
         path = el.ordered_path(*AXIAL)
         slices, _ = el.slice_path(path, p)
         th_ok, _ = el.highland_pofx(slices, el.x_over_X0(path))
-        q = sum(float(theta0_highland(
-            s["p"], s["dx"] / MATERIALS[s["mat"]]["X0"])) ** 2 for s in slices)
+        q = sum(
+            float(theta0_highland(s["p"], s["dx"] / MATERIALS[s["mat"]]["X0"])) ** 2
+            for s in slices
+        )
         ratio = math.sqrt(q) / th_ok
         assert 0.80 < ratio < 0.98, (p, ratio)
 
@@ -254,12 +269,9 @@ def test_vectorised_api_matches_scalar_core_on_grid():
     t_snap, X_snap = _snapped(AXIAL)
     for p in (1.0, 3.5):
         direct = el.calibrate(*t_snap, p)
-        assert abs(float(eps_M_pofx(p, *X_snap)[0])
-                   - direct["eps_M"]) < 1e-9, p
-        assert abs(float(eps_M_mixed(p, *X_snap)[0])
-                   - direct["eps_mix"]) < 1e-9, p
-        assert abs(float(theta_RMS_pofx(p, *X_snap)[0])
-                   - direct["th_rms"]) < 1e-12, p
+        assert abs(float(eps_M_pofx(p, *X_snap)[0]) - direct["eps_M"]) < 1e-9, p
+        assert abs(float(eps_M_mixed(p, *X_snap)[0]) - direct["eps_mix"]) < 1e-9, p
+        assert abs(float(theta_RMS_pofx(p, *X_snap)[0]) - direct["th_rms"]) < 1e-12, p
 
 
 def test_vectorised_api_shape_contract():
@@ -276,8 +288,7 @@ def test_pofx_selfconsistent_bias_is_small_and_negative():
     of magnitude smaller than the one-sided offset, and negative."""
     X = _areal(AXIAL)
     for p in MOMENTA:
-        bias = 100.0 * (float(eps_M_pofx(p, *X)[0])
-                        - el.calibrate(*AXIAL, p)["eps_M"])
+        bias = 100.0 * (float(eps_M_pofx(p, *X)[0]) - el.calibrate(*AXIAL, p)["eps_M"])
         assert -0.03 < bias < 0.0, (p, bias)
 
 
@@ -298,8 +309,7 @@ def test_pofx_mixed_bias_tracks_constant_p_case():
         r = el.calibrate(*AXIAL, p)
         bias_mixed = float(eps_M_mixed(p, *X)[0]) - r["eps_mix"]
         bias_constp = float(eps_M_constp(p, *X)[0]) - r["eps_M_0"]
-        assert bias_mixed > 0.0 and bias_constp > 0.0, (p, bias_mixed,
-                                                        bias_constp)
+        assert bias_mixed > 0.0 and bias_constp > 0.0, (p, bias_mixed, bias_constp)
         assert bias_mixed >= bias_constp, (p, bias_mixed, bias_constp)
         assert bias_mixed < 1e-3, (p, bias_mixed)
         ratios.append(bias_mixed / bias_constp)
@@ -312,10 +322,11 @@ def test_exact_api_is_unbucketed():
     """eps_M_exact must vary smoothly with X, not in 0.25 g/cm^2 steps, and
     must equal the repo primitives computed directly."""
     from eps_quadrature import eps_M_exact
+
     X_al, X_cu, X_pb = _areal(AXIAL)
     for p in MOMENTA:
         a = eps_M_exact(p, X_al, X_cu, X_pb)
-        b = eps_M_exact(p, X_al, X_cu + 0.01, X_pb)    # 11 microns of Cu
+        b = eps_M_exact(p, X_al, X_cu + 0.01, X_pb)  # 11 microns of Cu
         assert abs(a - b) < 2e-5, (p, a, b)
         assert abs(a - _eps_M_exact(p, X_al, X_cu, X_pb)) < 1e-14, p
 
@@ -323,16 +334,19 @@ def test_exact_api_is_unbucketed():
 def test_exact_matches_bucketed_on_grid():
     """On grid-aligned inputs the two APIs must agree to machine precision."""
     from eps_quadrature import eps_M_exact
+
     _, X_snap = _snapped(AXIAL)
     for p in MOMENTA:
-        assert abs(eps_M_exact(p, *X_snap)
-                   - float(eps_M_constp(p, *X_snap)[0])) < 1e-12, p
+        assert (
+            abs(eps_M_exact(p, *X_snap) - float(eps_M_constp(p, *X_snap)[0])) < 1e-12
+        ), p
 
 
 def test_marginal_interpolant_accurate():
     """eps_M_marginal's ln-p tabulation must reproduce eps_M_exact well below
     the offset it was introduced to remove (+0.033 pp)."""
     from eps_quadrature import _marginal_interp_error
+
     err = _marginal_interp_error()
     assert err < 3e-3, err
 
@@ -340,6 +354,7 @@ def test_marginal_interpolant_accurate():
 def test_marginal_is_exact_at_reference_momenta():
     """The four manuscript momenta must come back as the exact values."""
     from eps_quadrature import eps_M_exact, eps_M_marginal
+
     X_al, X_cu = _areal(AXIAL)[0], _areal(AXIAL)[1]
     for p in MOMENTA:
         got = float(eps_M_marginal(p)[0])
@@ -351,6 +366,7 @@ def test_marginal_handles_pathological_momenta():
     """Reconstructed p_meas can land far outside the tabulated range when
     delta_meas is small, or be non-finite.  Neither may extrapolate or crash."""
     from eps_quadrature import eps_M_exact, eps_M_marginal
+
     X_al, X_cu = _areal(AXIAL)[0], _areal(AXIAL)[1]
     for p in (0.05, 500.0):
         got = float(eps_M_marginal(p)[0])
@@ -363,6 +379,7 @@ def test_marginal_handles_pathological_momenta():
 def test_marginal_shape_contract_unchanged():
     """results_pipeline calls this with a 1-D array of p_meas."""
     from eps_quadrature import eps_M_marginal
+
     assert eps_M_marginal(2.0).shape == (1,)
     assert eps_M_marginal(np.array([1.0, 2.0, 3.5, 6.0])).shape == (4,)
 
@@ -370,8 +387,13 @@ def test_marginal_shape_contract_unchanged():
 # --------------------------------------------------------- exact p(X) API
 def test_pofx_exact_api_matches_calibrate():
     """The exact p(X) wrappers must be transparent over energy_loss."""
-    from eps_quadrature_pofx import (calibrate_exact, eps_M_mixed_exact,
-                                     eps_M_pofx_exact, theta_RMS_pofx_exact)
+    from eps_quadrature_pofx import (
+        calibrate_exact,
+        eps_M_mixed_exact,
+        eps_M_pofx_exact,
+        theta_RMS_pofx_exact,
+    )
+
     X = _areal(AXIAL)
     for p in (1.0, 6.0):
         direct = el.calibrate(*AXIAL, p)
@@ -386,6 +408,7 @@ def test_pofx_marginal_is_exact_and_mixed_by_default():
     momentum.  Its default must therefore be the MIXED quantity, and it must
     reproduce calibrate_exact rather than the bucketed eps_M_mixed."""
     from eps_quadrature_pofx import eps_M_marginal_pofx
+
     for p in MOMENTA:
         direct = el.calibrate(*AXIAL, p)
         got = float(eps_M_marginal_pofx(p)[0])
@@ -397,12 +420,14 @@ def test_pofx_marginal_is_exact_and_mixed_by_default():
 
 def test_pofx_marginal_interpolant_accurate():
     from eps_quadrature_pofx import _marginal_interp_error
+
     err = _marginal_interp_error()
     assert err < 3e-3, err
 
 
 def test_pofx_marginal_shape_and_pathological_momenta():
     from eps_quadrature_pofx import eps_M_marginal_pofx
+
     assert eps_M_marginal_pofx(2.0).shape == (1,)
     assert eps_M_marginal_pofx(np.array([1.0, 2.0, 3.5, 6.0])).shape == (4,)
     bad = eps_M_marginal_pofx(np.array([-1.0, 0.0, np.nan]))
@@ -423,8 +448,8 @@ def test_sampler_uses_pofx_accumulation():
     the patch is not applied; if it fails on the numeric assertions, the
     patch applied something other than what was specified.
     """
-    key_p, key_al, key_cu, key_pb = 100, 108, 538, 0   # p=1.0, X_al=27.0,
-                                                        # X_cu=134.5, X_pb=0
+    key_p, key_al, key_cu, key_pb = 100, 108, 538, 0  # p=1.0, X_al=27.0,
+    # X_cu=134.5, X_pb=0
     p = key_p * P_CACHE_STEP
     X_al = key_al * X_CACHE_STEP
     X_cu = key_cu * X_CACHE_STEP
@@ -443,7 +468,9 @@ def test_sampler_uses_pofx_accumulation():
     chi_c2_want, _, B_want = el.accumulate_moliere(slices)
 
     assert abs(chi_c2_from_sampler / chi_c2_want - 1.0) < 1e-9, (
-        chi_c2_from_sampler, chi_c2_want)
+        chi_c2_from_sampler,
+        chi_c2_want,
+    )
     assert abs(B / B_want - 1.0) < 1e-9, (B, B_want)
 
     # Must differ from the OLD constant-p value -- confirms the patch
@@ -455,7 +482,8 @@ def test_sampler_uses_pofx_accumulation():
     assert rel_diff > 0.05, (
         f"sampler chi_c2 differs from the constant-p value by only "
         f"{rel_diff:.2e}; Section B patch does not appear to be active "
-        f"(chi_c2_sampler={chi_c2_from_sampler}, chi_c2_constp={c2_old})")
+        f"(chi_c2_sampler={chi_c2_from_sampler}, chi_c2_constp={c2_old})"
+    )
 
 
 def test_sampler_pofx_reduces_to_constant_p_when_loss_disabled():
@@ -487,9 +515,13 @@ def test_sampler_pofx_reduces_to_constant_p_when_loss_disabled():
 
 def _self_check_registry():
     import ast as _ast
+
     src = _ast.parse(open(__file__).read())
-    declared = {n.name for n in src.body
-                if isinstance(n, _ast.FunctionDef) and n.name.startswith("test_")}
+    declared = {
+        n.name
+        for n in src.body
+        if isinstance(n, _ast.FunctionDef) and n.name.startswith("test_")
+    }
     collected = {k for k in globals() if k.startswith("test_")}
     missing = declared - collected
     assert not missing, f"tests declared but not collected: {sorted(missing)}"
@@ -498,6 +530,7 @@ def _self_check_registry():
 
 if __name__ == "__main__":
     import sys
+
     n_declared = _self_check_registry()
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     assert len(fns) == n_declared, "test registry mismatch"
