@@ -20,11 +20,11 @@ import math
 
 import numpy as np
 
-import energy_loss as el
-import stopping
+from . import energy_loss as el
+from . import stopping
 from config import MATERIALS, MOMENTA, THETA_CUT
-from eps_quadrature import eps_M as eps_M_constp, optimal_k as optimal_k_constp
-from kinematics import theta0_highland
+from .eps_quadrature import eps_M as eps_M_constp, optimal_k as optimal_k_constp
+from .kinematics import theta0_highland
 
 AXIAL = (10.0, 15.0, 0.0)  # t_Al, t_Cu, t_Pb  cm
 OFFCU = (25.0, 0.0, 0.0)

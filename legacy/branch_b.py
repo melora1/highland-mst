@@ -42,7 +42,7 @@ from config import (
     VOX_HALF,
     VOX_SIZE,
 )
-from kinematics import theta_space_highland
+from .kinematics import theta_space_highland
 
 EDGE_Z_BAND = 5.0  # cm, half-width of the z band the radial profile averages
 
@@ -243,7 +243,7 @@ def mean_momentum_map(df):
 
 # ------------------------------------------------------------------ driver
 def run_branch_b():
-    from branch_a import eps_M_of
+    from .branch_a import eps_M_of
 
     a, b = np.load(os.path.join(OUT_DIR, "eps_M_fit.npy"))
     eps_fn = lambda p: eps_M_of(p, a, b)
@@ -329,7 +329,7 @@ def weight_biased(df, eps_fn):
 
 # per-setting diagnostic images (momentum-driven bias -> near-global rescale)
 def run_per_setting():
-    from branch_a import eps_M_of
+    from .branch_a import eps_M_of
 
     a, b = np.load(os.path.join(OUT_DIR, "eps_M_fit.npy"))
     eps_fn = lambda p: eps_M_of(p, a, b)

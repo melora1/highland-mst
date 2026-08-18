@@ -1,6 +1,7 @@
 # Condensed revision codebase
 
-This replaces the 20-file legacy tree with one production path.
+This provides one condensed production path while preserving the complete
+earlier implementation under `legacy/`.
 
 ## Files
 
@@ -73,6 +74,12 @@ is never confused with the deployed upstream-tagged quantity
 6. The gradient analysis writes two predictors: the unweighted mean normalization field (the mechanism test) and `w_Q` times that field (an algebraic closure that should reproduce `I_nom-I_Q`; it is not independent evidence).
 7. Adaptive-cut retention is reported with an explicit denominator (`all generated` as primary, plus a conditional fixed-cut-accepted diagnostic).
 
-## Legacy files intentionally removed
+## Preserved legacy implementation
 
-`branch_a.py`, `branch_b.py`, `run_all.py`, the separate constant-p/p(X) epsilon modules, the old arithmetic verifier, and the old Geant4 plotting script are not part of this tree. Their roles either conflicted after the p(X) sampler patch or are now covered by the unified physics/analysis modules.
+The older implementation has been removed from the production root, not from
+the repository. `branch_a.py`, `branch_b.py`, `run_all.py`, the separate
+constant-p/p(X) epsilon modules, the verification scripts, the previous
+simulation and results pipeline, and all plotting variants are preserved in
+`legacy/`. No functions or executable reports were discarded. Run those entry
+points with package syntax, such as `python3 -m legacy.run_all`; see
+`legacy/README.md` for the complete list.

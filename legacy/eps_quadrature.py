@@ -61,9 +61,9 @@ from functools import lru_cache
 import numpy as np
 from scipy.optimize import minimize_scalar
 
-import moliere as ml
+from . import moliere as ml
 from config import MATERIALS, P_CACHE_STEP, THETA_CUT, X_CACHE_STEP
-from kinematics import theta_space_highland
+from .kinematics import theta_space_highland
 
 # Compatibility name only.  The corrected implementation has no universal
 # optimum; use optimal_k()/optimal_cut() for the chosen momentum and path.

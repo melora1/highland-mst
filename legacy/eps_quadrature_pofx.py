@@ -48,9 +48,9 @@ from functools import lru_cache
 
 import numpy as np
 
-import energy_loss as el
+from . import energy_loss as el
 from config import MATERIALS, P_CACHE_STEP, THETA_CUT, X_CACHE_STEP
-from kinematics import theta_space_highland
+from .kinematics import theta_space_highland
 
 _CUT_CACHE_STEP = 0.002  # rad, matches eps_quadrature
 _TOL = 0.01  # Step 1.1 slicing criterion
@@ -306,7 +306,7 @@ def _marginal_interp_error(mixed=True, theta_cut=THETA_CUT, n_probe=120):
 
 def verify_radial_pofx():
     """Axial reference table: constant-p, p(X), and the deployed mismatch."""
-    from eps_quadrature import eps_M_exact
+    from .eps_quadrature import eps_M_exact
 
     X_al = MATERIALS["Al"]["rho"] * _AXIAL_T_AL
     X_cu = MATERIALS["Cu"]["rho"] * _AXIAL_T_CU

@@ -42,8 +42,8 @@ from config import (
     Z_MAGNET_CM,
 )
 from geometry import areal_densities, trace_ref, trace_true, x_over_X0
-from kinematics import theta0_highland
-from moliere import MoliereSampler
+from .kinematics import theta0_highland
+from .moliere import MoliereSampler
 
 
 def _slope(z1, z2, u1, u2):

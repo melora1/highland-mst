@@ -59,7 +59,7 @@ if _config.STEER_COMPENSATION != "per_setting":
     )
     _config.STEER_COMPENSATION = "per_setting"
 
-import simulate
+from . import simulate
 
 
 def _preflight_correlation_check():
@@ -99,11 +99,11 @@ def _preflight_correlation_check():
     return spread, production_ok
 
 
-import branch_b as bb
+from . import branch_b as bb
 from config import MOMENTA, OUT_DIR, MATERIALS
-from eps_quadrature import theta_RMS_at_cut, optimal_cut
-from eps_quadrature_pofx import theta_RMS_pofx, eps_M_marginal_pofx
-from kinematics import theta_space_highland
+from .eps_quadrature import theta_RMS_at_cut, optimal_cut
+from .eps_quadrature_pofx import theta_RMS_pofx, eps_M_marginal_pofx
+from .kinematics import theta_space_highland
 
 # NOTE ON SCOPE: theta_RMS_at_cut / optimal_cut (the adaptive-acceptance
 # image, I_Q_adaptive) remain constant-p.  Only the fixed-200-mrad images
@@ -277,7 +277,7 @@ def main():
 
     _preflight_correlation_check()
 
-    from moliere import MoliereSampler
+    from .moliere import MoliereSampler
 
     sampler = MoliereSampler(nmax=2)
 
@@ -347,7 +347,7 @@ def main():
     # (6 GeV/c); this reports what the RASTER-AVERAGED reference path shows,
     # which is expected to be smaller because most raster weight sits on
     # shorter, less lossy paths than the axial worst case.
-    from eps_quadrature_pofx import p_exit
+    from .eps_quadrature_pofx import p_exit
 
     p_meas_vals = df.p_meas.values
     p_out_vals = p_exit(

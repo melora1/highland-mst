@@ -57,10 +57,10 @@ import math
 
 import numpy as np
 
-import moliere as ml
+from . import moliere as ml
 from config import MATERIALS, MAT_ORDER, M_MU, THETA_CUT
-from kinematics import theta_space_highland
-from stopping import dedx_of_E
+from .kinematics import theta_space_highland
+from .stopping import dedx_of_E
 
 MEV = 1e3
 

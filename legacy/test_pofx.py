@@ -32,13 +32,13 @@ import math
 
 import numpy as np
 
-import energy_loss as el
-import moliere as ml
-import stopping
+from . import energy_loss as el
+from . import moliere as ml
+from . import stopping
 from config import MATERIALS, MOMENTA, P_CACHE_STEP, THETA_CUT, X_CACHE_STEP
-from eps_quadrature import eps_M as eps_M_constp, optimal_k
-from eps_quadrature_pofx import eps_M_mixed, eps_M_pofx, theta_RMS_pofx
-from kinematics import theta0_highland, theta_space_highland
+from .eps_quadrature import eps_M as eps_M_constp, optimal_k
+from .eps_quadrature_pofx import eps_M_mixed, eps_M_pofx, theta_RMS_pofx
+from .kinematics import theta0_highland, theta_space_highland
 
 AXIAL = (10.0, 15.0, 0.0)  # t_Al, t_Cu, t_Pb  in cm
 
@@ -321,7 +321,7 @@ def test_pofx_mixed_bias_tracks_constant_p_case():
 def test_exact_api_is_unbucketed():
     """eps_M_exact must vary smoothly with X, not in 0.25 g/cm^2 steps, and
     must equal the repo primitives computed directly."""
-    from eps_quadrature import eps_M_exact
+    from .eps_quadrature import eps_M_exact
 
     X_al, X_cu, X_pb = _areal(AXIAL)
     for p in MOMENTA:
@@ -333,7 +333,7 @@ def test_exact_api_is_unbucketed():
 
 def test_exact_matches_bucketed_on_grid():
     """On grid-aligned inputs the two APIs must agree to machine precision."""
-    from eps_quadrature import eps_M_exact
+    from .eps_quadrature import eps_M_exact
 
     _, X_snap = _snapped(AXIAL)
     for p in MOMENTA:
@@ -345,7 +345,7 @@ def test_exact_matches_bucketed_on_grid():
 def test_marginal_interpolant_accurate():
     """eps_M_marginal's ln-p tabulation must reproduce eps_M_exact well below
     the offset it was introduced to remove (+0.033 pp)."""
-    from eps_quadrature import _marginal_interp_error
+    from .eps_quadrature import _marginal_interp_error
 
     err = _marginal_interp_error()
     assert err < 3e-3, err
@@ -353,7 +353,7 @@ def test_marginal_interpolant_accurate():
 
 def test_marginal_is_exact_at_reference_momenta():
     """The four manuscript momenta must come back as the exact values."""
-    from eps_quadrature import eps_M_exact, eps_M_marginal
+    from .eps_quadrature import eps_M_exact, eps_M_marginal
 
     X_al, X_cu = _areal(AXIAL)[0], _areal(AXIAL)[1]
     for p in MOMENTA:
@@ -365,7 +365,7 @@ def test_marginal_is_exact_at_reference_momenta():
 def test_marginal_handles_pathological_momenta():
     """Reconstructed p_meas can land far outside the tabulated range when
     delta_meas is small, or be non-finite.  Neither may extrapolate or crash."""
-    from eps_quadrature import eps_M_exact, eps_M_marginal
+    from .eps_quadrature import eps_M_exact, eps_M_marginal
 
     X_al, X_cu = _areal(AXIAL)[0], _areal(AXIAL)[1]
     for p in (0.05, 500.0):
@@ -378,7 +378,7 @@ def test_marginal_handles_pathological_momenta():
 
 def test_marginal_shape_contract_unchanged():
     """results_pipeline calls this with a 1-D array of p_meas."""
-    from eps_quadrature import eps_M_marginal
+    from .eps_quadrature import eps_M_marginal
 
     assert eps_M_marginal(2.0).shape == (1,)
     assert eps_M_marginal(np.array([1.0, 2.0, 3.5, 6.0])).shape == (4,)
@@ -387,7 +387,7 @@ def test_marginal_shape_contract_unchanged():
 # --------------------------------------------------------- exact p(X) API
 def test_pofx_exact_api_matches_calibrate():
     """The exact p(X) wrappers must be transparent over energy_loss."""
-    from eps_quadrature_pofx import (
+    from .eps_quadrature_pofx import (
         calibrate_exact,
         eps_M_mixed_exact,
         eps_M_pofx_exact,
@@ -407,7 +407,7 @@ def test_pofx_marginal_is_exact_and_mixed_by_default():
     """eps_M_marginal_pofx feeds I_p, whose denominator sits at the tagged
     momentum.  Its default must therefore be the MIXED quantity, and it must
     reproduce calibrate_exact rather than the bucketed eps_M_mixed."""
-    from eps_quadrature_pofx import eps_M_marginal_pofx
+    from .eps_quadrature_pofx import eps_M_marginal_pofx
 
     for p in MOMENTA:
         direct = el.calibrate(*AXIAL, p)
@@ -419,14 +419,14 @@ def test_pofx_marginal_is_exact_and_mixed_by_default():
 
 
 def test_pofx_marginal_interpolant_accurate():
-    from eps_quadrature_pofx import _marginal_interp_error
+    from .eps_quadrature_pofx import _marginal_interp_error
 
     err = _marginal_interp_error()
     assert err < 3e-3, err
 
 
 def test_pofx_marginal_shape_and_pathological_momenta():
-    from eps_quadrature_pofx import eps_M_marginal_pofx
+    from .eps_quadrature_pofx import eps_M_marginal_pofx
 
     assert eps_M_marginal_pofx(2.0).shape == (1,)
     assert eps_M_marginal_pofx(np.array([1.0, 2.0, 3.5, 6.0])).shape == (4,)

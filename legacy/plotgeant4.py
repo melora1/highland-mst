@@ -35,10 +35,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-import moliere as ml
+from . import moliere as ml
 from config import MATERIALS
-from kinematics import theta0_highland, theta_space_highland
-from eps_quadrature import eps_M, efficiency, optimal_k, _theta_rms_disc
+from .kinematics import theta0_highland, theta_space_highland
+from .eps_quadrature import eps_M, efficiency, optimal_k, _theta_rms_disc
 
 # ---------------------------------------------------------------- style
 plt.rcParams.update(

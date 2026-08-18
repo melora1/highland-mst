@@ -26,7 +26,7 @@ def main():
         sys.exit("validation failed -- fix before running the production sample")
 
     print("== stage 1: Gaussian control run (n=0) ==")
-    import simulate
+    from . import simulate
 
     simulate.run(mode="gauss")
 
@@ -34,7 +34,7 @@ def main():
     simulate.run(mode="moliere")
 
     print("== stage 3: Branch A ==")
-    import branch_a
+    from . import branch_a
 
     dfa = branch_a.branch_a()
     print(dfa.to_string(index=False))
@@ -44,7 +44,7 @@ def main():
         print(m)
 
     print("== stage 4/5: Branch B + correction ==")
-    import branch_b
+    from . import branch_b
 
     res, summary = branch_b.run_branch_b()
     print(res.to_string(index=False))

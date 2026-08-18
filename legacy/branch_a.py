@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 
 from config import MOMENTA, OUT_DIR
-from kinematics import theta0_highland
+from .kinematics import theta0_highland
 
 N_BOOT = 500
 RNG = np.random.default_rng(12345)

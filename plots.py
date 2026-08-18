@@ -199,8 +199,9 @@ def image_scales(dirs: list[Path], percentile: float = 99.0) -> tuple[float, flo
 # Theory figures
 
 
-def plot_theory(outdir: str | Path, figdir: Path):
+def plot_theory(outdir: str | Path, figdir: Path | None = None):
     out = Path(outdir)
+    figdir = _figdir(out) if figdir is None else figdir
     d = pd.read_csv(out / "theory_collapse.csv")
 
     from analysis import PATHS
@@ -352,12 +353,13 @@ def plot_theory(outdir: str | Path, figdir: Path):
 
 def plot_images(
     outdir: str | Path,
-    figdir: Path,
+    figdir: Path | None = None,
     nominal_vmax: float | None = None,
     p_vmax: float | None = None,
     percentile: float = 99.0,
 ):
     out = Path(outdir)
+    figdir = _figdir(out) if figdir is None else figdir
     with np.load(out / "images.npz") as z:
         required = {"I_nom", "I_p", "I_Q"}
         if not required.issubset(z.files):
@@ -444,8 +446,11 @@ def plot_images(
 # Gradient figure
 
 
-def plot_gradient(outdir: str | Path, figdir: Path, percentile: float = 99.0):
+def plot_gradient(
+    outdir: str | Path, figdir: Path | None = None, percentile: float = 99.0
+):
     out = Path(outdir)
+    figdir = _figdir(out) if figdir is None else figdir
     with np.load(out / "gradient_maps.npz") as z:
         required = {"observed", "predicted_unweighted", "residual_unweighted"}
         if not required.issubset(z.files):
@@ -510,13 +515,14 @@ def plot_gradient(outdir: str | Path, figdir: Path, percentile: float = 99.0):
 # Paired-seed summary
 
 
-def plot_paired(csv_path: Path, figdir: Path):
+def plot_paired(csv_path: Path, figdir: Path | None = None):
     if not csv_path.exists():
         return
     d = pd.read_csv(csv_path)
     if d.empty:
         return
     source = csv_path.parent / "paired"
+    figdir = _figdir(csv_path.parent) if figdir is None else figdir
     fig, axes = plt.subplots(1, 2, figsize=(7.0, 3.0))
     x = np.arange(len(d))
     axes[0].errorbar(x, d.dSNR_mean, yerr=d.dSNR_sd, fmt="o", capsize=3)

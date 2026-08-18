@@ -54,7 +54,7 @@ from config import (
     THETA_GRID_N,
     X_CACHE_STEP,
 )
-from kinematics import beta_of
+from .kinematics import beta_of
 
 
 # ============================================================================
@@ -521,7 +521,7 @@ class MoliereSampler:
         # test_pofx.test_constant_p_limit).  Local import: energy_loss.py
         # imports this module at module scope, so importing it there would
         # be circular.
-        from energy_loss import accumulate_moliere, ordered_path, slice_path
+        from .energy_loss import accumulate_moliere, ordered_path, slice_path
 
         t_al = X_al / MATERIALS["Al"]["rho"]
         t_cu = X_cu / MATERIALS["Cu"]["rho"]
