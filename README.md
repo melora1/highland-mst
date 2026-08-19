@@ -1,19 +1,58 @@
-# Condensed revision codebase
+# Highland-MST revision codebase
 
-This provides one condensed production path while preserving the complete
-earlier implementation under `legacy/`.
+This directory is synchronized to the corrected manuscript source `HighlandValidation_rev11.tex`.
 
-## Files
+## What the production simulation is
 
-- `config.py` — constants and revised ±11 cm raster.
-- `physics.py` — Highland kinematics, Bethe/CSDA energy loss, radial Molière n≤2 model, exact reduced-variable formulation, p(X) segmented approximation, cached calibration/sampling.
-- `geometry.py` — exact nested-target ray intervals and ordered material segments.
-- `simulation.py` — re-steered tagged-beam detector simulation, equal exposure and controlled momentum-gradient exposure.
-- `analysis.py` — Steps 1–7 tables, fixed-cut images, off-Cu test, adaptive-cut retention, paired statistics, causal gradient test.
-- `plots.py` — reduced-variable and difference-map figures only; legacy five-near-identical panels and unresolved PSF plots are removed.
-- `geant4_compare.py` — Step-8 comparison of supplied Geant4 angle dumps at k={2,5,10,20,40}, reporting Fc, truncated RMS and M4 without hard-coded model-error budgets.
-- `tests.py` — pre-flight closures: geometry, exact reduced identity, Gaussian kernel, radial normalization/tail coefficient, sampler↔quadrature closure, azimuthal isotropy, CSDA range-table↔RK4 closure, dual p(X) screening conventions, steering, seed uniqueness, and stopping-power minima.
-- `run.py` — sole CLI entry point.
+The Python production study is a **controlled model-internal detector study**, not full Geant4 transport. `simulation.py` samples the non-factorized radial Moliere `n<=2` distribution from the event's exact ordered material path using the segmented `p(X)` construction in `physics.py`. The integrated angular deflection is represented as a single equivalent kink at the midpoint of the traversed outer target. Tracker hits and the upstream dipole momentum tag are then smeared/reconstructed.
+
+The reference geometry replaces Pb by Cu. `geometry.py` traces exact ordered ray segments `[Al_up, Cu_up, Pb, Cu_down, Al_down]`; energy loss is not reconstructed from unordered totals.
+
+## Current production geometry
+
+- Al cube: 25 cm side.
+- Cu cube: 15 cm side.
+- Pb cylinder: radius 2 cm, height 15 cm, center `(x,y)=(3,2)` cm.
+- Raster: **9 x 9** nodes over `[-11,+11] cm` in both transverse coordinates.
+- Four nominal momenta: 1, 2, 3.5, 6 GeV/c.
+- 1% Gaussian true-momentum bite; 2 mrad beam divergence; 1 cm Gaussian spot.
+- Six tracker planes at `z=(-120,-90,-45,-15,25,65)` cm with 200 um single-hit resolution.
+- Point dipole: 1 T, 0.30 m effective length; beam is re-steered separately at each nominal momentum.
+- Fixed angular cut: 200 mrad.
+- Image grid: 50^3 voxels over `[-15,+15] cm`, 0.6 cm voxels; map statistics require at least 20 entries per voxel.
+
+## Physics levels kept separate
+
+1. **Constant-p radial Moliere model.** The exact reduced identity within the `n<=2` truncation is
+
+   `(1+epsilon_M)^2 = R B mu2(eta_cut;B)`.
+
+2. **Segmented p(X) extension.** Energy is propagated by collision stopping power. Two explicit screening-log continuations are available:
+   - `dchi_c2` (production default): local `ln chi_a^2` weighted by local `dchi_c^2`;
+   - `serial`: common-p `Z(Z+1)X/A` weighting retained slice by slice.
+
+   They coincide at constant momentum. Their finite-loss spread is written to `energy_loss_calibration.csv` and treated as a construction systematic, not as a theorem.
+
+3. **Detector weights.** `I_nom`, `I_p`, and `I_Q` remain distinct. `I_p` applies the central-path p(X) mismatch factor to the event-specific reconstructed Highland core width; it is not a completely fixed axial denominator.
+
+## Analysis controls now implemented
+
+`analysis.py` writes:
+
+- `metrics.csv`: absolute Pb SNR and Pb-Cu CNR for `I_nom`, `I_const`, `I_scale_opt`, `I_p`, `I_Q`, and `I_ideal`;
+- `artifact_summary.csv`: nominal residual, event-mean scalar control, exact voxel-RMS-optimal scalar control, and p(X) residual;
+- `calibration_summary.csv`: scalar conventions, p(X) momentum loss, screening mode and clipping diagnostic;
+- `path_residuals.csv`: **both truth and reconstructed** Al-only/Cu-bearing path classes;
+- `path_class_migration.csv`: truth/reconstruction migration table;
+- `split_half_noise.csv`: independent split-half estimate of the map-RMS noise floor for `I_p-I_Q`, including a quadrature residual diagnostic;
+- `adaptive_retention.csv`: retention relative to all generated events plus the conditional fixed-cut diagnostic;
+- `images.npz`: all image estimators, including `I_scale_opt`.
+
+The exact global scalar control minimizes
+
+`RMS(I_nom/c - I_Q)`
+
+over the same valid voxels used for the map comparison. `I_const` is retained separately as the event-count-mean epsilon control.
 
 ## Commands
 
@@ -23,63 +62,48 @@ python run.py theory --out out/theory
 python run.py simulate --n-per-setting 500000 --seed 0 --out out/equal
 python run.py gradient --n-per-cell 20000 --seed 0 --out out/gradient
 python run.py paired out/seed*/metrics.csv --out out/paired_seed_summary.csv
+python plots.py --root out --all
 ```
 
-`run.py gradient` uses a **reference-only Al+Cu target by default** so the imposed momentum-mixture gradient is the only deliberate spatial intervention. Total fluence per raster cell is fixed.
+`tests.py` currently contains 20 physics/geometry closure tests.
 
-Event tables are written as Parquet when a Parquet engine is installed; otherwise `run.py` falls back to a same-stem `.pkl` file rather than failing. `run.py analyze` accepts either format.
+## Geant4 single-slab benchmark
 
-## Theoretical separation enforced in code
+The C++ source under `geant4/` produces single-material Cu or Pb exit-angle dumps. It is separate from the Python production generator.
 
-### Constant-p theory
+The corrected executable interface requires an explicit random seed:
 
-The radial model obeys exactly, within the chosen n≤2 truncation,
+```bash
+./mstSim <urban|wentzel|wvi_ss> <Cu|Pb> <thickness_cm> <p_GeV> <nEvents> <seed> <outFile>
+```
 
-\[
-(1+\epsilon_M)^2 = R B\,\mu_2(\eta_{cut};B),\qquad
-\eta_{cut}=\frac{\theta_{cut}}{\chi_c\sqrt B}
-=\frac{k}{\sqrt{2RB}}.
-\]
+Example:
 
-`analysis.run_theory()` writes the fixed-path collapse, general `epsilon_M(eta;R,B)` design table, matched-k/matched-eta composition tests, n≤1/n≤2 sensitivity, and a split log-law protocol: slope diagnostics at η=8–20, 10–30, and 15–30 entirely within the numerical table, plus deep η=30–100 and 50–500 windows used only to stabilize the asymptotic intercept.
+```bash
+./mstSim urban Cu 15.0 1.0 1000000 12345 out/Cu_t15_p1_urban_s12345.txt
+python geant4_compare.py \
+  --file urban=out/Cu_t15_p1_urban_s12345.txt \
+  --material Cu --thickness-cm 15.0 --p 1.0 --n-generated 1000000 \
+  --out out/Cu_t15_p1_compare.csv
+```
 
-The asymptotic fit is performed as
+`geant4_compare.py` now uses the manuscript sign convention
 
-\[
-(1+\epsilon_M)^2-1=m\ln\eta_{cut}+b
-                  =m\ln(\eta_{cut}/\eta_1),
-\]
+`theta_rms_model/theta_rms_G4 - 1`,
 
-with both `m` and `b` free.  The fitted slope is compared with the Rutherford/Moliere prediction `2R` only in windows with η≤`RADIAL_ETA_MAX=30`, so the comparison is not inherited from the analytic Rutherford continuation. Deep windows above η=30 are labeled `eta1_asymptote` and are used only for intercept stability. No universal `eta1` is assumed. Given the exact reduced identity, the fixed-2R pointwise intercept is `eta1 = eta*exp(-(R*B*mu2(eta;B)-1)/(2R))`, so within this model it is determined by `(R,B)` rather than by an additional composition parameter.
+reports the corresponding quadratic-weight bias, a median/Rayleigh core-width comparison, delta-method sampling intervals from `M4`, and a finite reduced-angle band decomposition of the second-moment numerator. It also accepts `--path AlCu` or `--path Al25` for future layered/reference transport dumps.
 
-### Energy loss
+`wvi_ss` is an explicit diagnostic configuration that replaces the reference-list muon MSC with Wentzel-VI plus discrete Coulomb scattering. It is **not** assumed a priori to be more physical than the unmodified reference lists. `mstSim` prints the installed muon process names at runtime so the exact process configuration can be recorded.
 
-`physics.calibrate_pofx()` propagates energy by CSDA and uses ordered path segments. The varying-p Moliere reduction carries two explicit screening-log continuations: local `dchi_c^2` weighting and slice-wise `Z(Z+1)X/A` serial weighting. They are algebraically identical at constant momentum. Their finite-loss spread is reported as an internal construction systematic; neither makes the one-B representation for a degrading path a theorem. Independent transport benchmarking is still required for publication-level absolute calibration.
+## Remaining external work
 
-The matched quantity
+The following cannot be completed from source code alone:
 
-`epsilon_matched = theta_RMS[p(X)] / theta_space[p(X)] - 1`
+- rerun the full 2e6-event production realization and the full matched-seed ensemble with the current 9x9 raster;
+- rerun the Geant4 slab suite using explicit seeds and retain the angle dumps/metadata;
+- record the actual Geant4 version used for those transport runs;
+- verify the transcribed Sternheimer density-effect constants against the primary PDG/LBL tables;
+- quantify radiative energy loss if a precision stopping-power uncertainty is claimed;
+- archive the final code release and DOI.
 
-is never confused with the deployed upstream-tagged quantity
-
-`epsilon_mixed = theta_RMS[p(X)] / theta_space(p_in) - 1`.
-
-## Publication cautions still requiring external verification
-
-1. The Sternheimer material constants in `config.py` are the transcribed values from the supplied code. The test against published minimum stopping powers is only an indirect closure check; verify the constants against the primary PDG/LBL table before publishing derived numbers.
-2. Collision stopping power is included; radiative loss is not. At these momenta it should be quantified rather than silently assumed negligible.
-3. The segmented p(X) one-B Molière construction is explicit and internally closed but is not promoted to a theorem. `geant4_compare.py` is the independent benchmark hook.
-4. The radial n≤2 expansion is an asymptotic truncation. Any clipped negative mass is reported by the calibration cache and theory tables.
-5. `I_const` uses the unweighted event-count mean of the per-event mismatch as a pure scale-null control. The nominal-weight-weighted mean is reported separately in `calibration_summary.csv` so it is not confused with the old 12.18% convention.
-6. The gradient analysis writes two predictors: the unweighted mean normalization field (the mechanism test) and `w_Q` times that field (an algebraic closure that should reproduce `I_nom-I_Q`; it is not independent evidence).
-7. Adaptive-cut retention is reported with an explicit denominator (`all generated` as primary, plus a conditional fixed-cut-accepted diagnostic).
-
-## Preserved legacy implementation
-
-The older implementation has been removed from the production root, not from
-the repository. `branch_a.py`, `branch_b.py`, `run_all.py`, the separate
-constant-p/p(X) epsilon modules, the verification scripts, the previous
-simulation and results pipeline, and all plotting variants are preserved in
-`legacy/`. No functions or executable reports were discarded. Run those entry
-points with package syntax, such as `python3 -m legacy.run_all`; see
-`legacy/README.md` for the complete list.
+Do not reuse detector-level or Geant4 numerical values from an older raster or an older comparator without regenerating them with this code.

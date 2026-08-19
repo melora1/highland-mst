@@ -398,13 +398,39 @@ def plot_images(
     if p.exists():
         d = pd.read_csv(p)
         if not d.empty:
-            fig, ax = plt.subplots(figsize=(4.2, 3.1))
-            bars = ax.bar(d.region, d.image_rms)
-            ax.bar_label(bars, fmt="%.4f", padding=2, fontsize=8)
+            fig, ax = plt.subplots(figsize=(5.2, 3.2))
+            classes = list(d.classification.drop_duplicates()) if "classification" in d else ["path"]
+            regions = ["Al-only", "Cu-bearing"]
+            x = np.arange(len(regions), dtype=float)
+            width = 0.36 if len(classes) > 1 else 0.6
+            for j, cls in enumerate(classes):
+                g = d[d.classification == cls] if "classification" in d else d
+                vals = [float(g.loc[g.region == r, "image_rms"].iloc[0]) if np.any(g.region == r) else np.nan for r in regions]
+                off = (j - 0.5 * (len(classes) - 1)) * width
+                bars = ax.bar(x + off, vals, width=width * 0.9, label=cls)
+                ax.bar_label(bars, fmt="%.4f", padding=2, fontsize=7)
+            ax.set_xticks(x, regions)
             ax.set_ylabel(r"image RMS of $I_p-I_Q$")
             ax.set_xlabel("reference-path class")
+            if len(classes) > 1:
+                ax.legend(frameon=False)
             fig.tight_layout()
             _save(fig, out, "offcu_path_residual", figdir)
+
+    p = out / "split_half_noise.csv"
+    if p.exists():
+        d = pd.read_csv(p)
+        d = d[(d.classification == "reconstructed") & d.region.isin(["Al-only", "Cu-bearing"])]
+        if not d.empty:
+            fig, ax = plt.subplots(figsize=(5.0, 3.2))
+            x = np.arange(len(d))
+            ax.bar(x - 0.18, d.observed_rms, width=0.36, label="observed RMS")
+            ax.bar(x + 0.18, d.noise_rms_full_est, width=0.36, label="split-half noise")
+            ax.set_xticks(x, d.region)
+            ax.set_ylabel(r"RMS of $I_p-I_Q$")
+            ax.legend(frameon=False)
+            fig.tight_layout()
+            _save(fig, out, "split_half_noise", figdir)
 
     p = out / "adaptive_retention.csv"
     if p.exists():
@@ -425,19 +451,14 @@ def plot_images(
     p = out / "artifact_summary.csv"
     if p.exists():
         a = pd.read_csv(p).iloc[0]
-        fig, ax = plt.subplots(figsize=(4.3, 3.1))
-        vals = [a.artifact_rms, a.p_residual_rms]
-        bars = ax.bar([r"$I_{\rm nom}-I_Q$", r"$I_p-I_Q$"], vals)
-        ax.bar_label(bars, fmt="%.3f", padding=2, fontsize=8)
+        fig, ax = plt.subplots(figsize=(6.0, 3.2))
+        labels = [r"$I_{\rm nom}-I_Q$", r"$I_{\rm const}-I_Q$", r"$I_{\rm nom}/c_*-I_Q$", r"$I_p-I_Q$"]
+        vals = [a.artifact_rms, a.const_residual_rms, a.scale_opt_residual_rms, a.p_residual_rms]
+        bars = ax.bar(np.arange(len(vals)), vals)
+        ax.bar_label(bars, fmt="%.3f", padding=2, fontsize=7)
+        ax.set_xticks(np.arange(len(vals)), labels, rotation=15, ha="right")
         ax.set_ylabel("image RMS difference")
-        ax.text(
-            0.98,
-            0.96,
-            f"reduction = {100.0 * a.p_reduction:.1f}%",
-            transform=ax.transAxes,
-            ha="right",
-            va="top",
-        )
+        ax.text(0.98, 0.96, rf"$c_*={a.c_opt:.4g}$", transform=ax.transAxes, ha="right", va="top")
         fig.tight_layout()
         _save(fig, out, "artifact_summary", figdir)
 

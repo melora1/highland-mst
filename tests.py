@@ -12,7 +12,7 @@ import math
 import sys
 import numpy as np
 
-from analysis import PATHS
+from analysis import PATHS, optimal_global_scale
 from config import MATERIALS, MOMENTA, RADIAL_ETA_MAX, THETA_CUT
 from geometry import trace_paths
 from physics import (
@@ -300,6 +300,19 @@ def stopping_minimum_indirect_closure():
     d = validate_stopping_minima()
     for m, r in d.items():
         assert abs(r["rel"]) < 0.01, (m, r)
+
+
+@test
+def global_scale_optimizer_matches_closed_form():
+    x = np.array([1.0, 2.0, 4.0, 8.0]).reshape(2, 2)
+    y = np.array([0.8, 1.7, 3.9, 7.5]).reshape(2, 2)
+    valid = np.ones_like(x, dtype=bool)
+    c = optimal_global_scale(x, y, valid)
+    expected = float(np.sum(x * x) / np.sum(x * y))
+    assert abs(c - expected) < 1e-14
+    a = 1.0 / c
+    # The derivative of ||a*x-y||^2 vanishes at the optimum.
+    assert abs(float(np.sum(x * (a * x - y)))) < 1e-13
 
 
 def main():

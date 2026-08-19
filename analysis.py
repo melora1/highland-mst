@@ -22,6 +22,7 @@ from config import (
     PB_ROI_R,
     PB_ROI_ZHALF,
     RADIAL_ETA_MAX,
+    SPLIT_SEED,
     THETA_CUT,
     VOX_HALF,
 )
@@ -385,40 +386,137 @@ def image_metrics(img, counts):
     )
 
 
-def path_residual_diagnostics(df, weights):
-    """Step 3: compare I_p-I_Q in truth Al-only and Cu-bearing event classes."""
-    seg = segment_matrix(df, "ref_true")
+def _reference_class_masks(df, prefix):
+    """Return Al-only and Cu-bearing masks for a stored reference-path trace."""
+    seg = segment_matrix(df, prefix)
     al_only = (seg[:, 1] + seg[:, 2] + seg[:, 3]) <= 1e-8
-    cu = (seg[:, 1] + seg[:, 3]) > 1e-8
+    cu_bearing = (seg[:, 1] + seg[:, 3]) > 1e-8
+    return {"Al-only": al_only, "Cu-bearing": cu_bearing}
+
+
+def path_residual_diagnostics(df, weights):
+    """Compare I_p-I_Q for both truth and reconstructed reference-path classes."""
     out = []
-    for name, mask in (("Al-only", al_only), ("Cu-bearing", cu)):
-        d = df.loc[mask]
-        if d.empty:
-            continue
-        ip, c = image_from_events(d, weights["I_p"][mask])
-        iq, _ = image_from_events(d, weights["I_Q"][mask])
-        valid = (c >= MIN_VOX_COUNT) & np.isfinite(ip) & np.isfinite(iq)
-        out.append(
-            dict(
-                region=name,
-                n_events=int(mask.sum()),
-                event_rms=float(
-                    np.sqrt(np.mean((weights["I_p"][mask] - weights["I_Q"][mask]) ** 2))
-                ),
-                image_rms=float(np.sqrt(np.mean((ip[valid] - iq[valid]) ** 2)))
-                if np.any(valid)
-                else np.nan,
+    for classification, prefix in (("truth", "ref_true"), ("reconstructed", "ref_reco")):
+        for name, mask in _reference_class_masks(df, prefix).items():
+            d = df.loc[mask]
+            if d.empty:
+                continue
+            residual_event = weights["I_p"][mask] - weights["I_Q"][mask]
+            residual_img, c = image_from_events(d, residual_event)
+            valid = (c >= MIN_VOX_COUNT) & np.isfinite(residual_img)
+            out.append(
+                dict(
+                    classification=classification,
+                    region=name,
+                    n_events=int(mask.sum()),
+                    event_rms=float(np.sqrt(np.mean(residual_event**2))),
+                    image_rms=float(np.sqrt(np.mean(residual_img[valid] ** 2)))
+                    if np.any(valid)
+                    else np.nan,
+                    n_voxels=int(np.sum(valid)),
+                )
             )
-        )
     return pd.DataFrame(out)
 
 
+def split_half_noise_diagnostics(df, weights, seed=SPLIT_SEED, min_half_count=None):
+    """Estimate the map-RMS noise floor for I_p-I_Q with an independent split.
+
+    Events are assigned randomly to two halves with a fixed seed.  For a voxel
+    with half counts n0,n1, the half-difference of the mean event residuals is
+    scaled by sqrt(n0*n1)/(n0+n1), which converts its variance to the variance
+    of the full-sample mean under the usual independent-identically-distributed
+    approximation.  The reported ``physical_rms_quadrature`` is therefore a
+    diagnostic, not a deconvolution theorem.
+    """
+    if min_half_count is None:
+        min_half_count = max(5, int(math.ceil(MIN_VOX_COUNT / 2)))
+    rng = np.random.default_rng(int(seed))
+    half = rng.integers(0, 2, size=len(df), dtype=np.int8)
+    residual = np.asarray(weights["I_p"] - weights["I_Q"], float)
+
+    groups = [("all", "all", np.ones(len(df), dtype=bool))]
+    for classification, prefix in (("truth", "ref_true"), ("reconstructed", "ref_reco")):
+        for region, mask in _reference_class_masks(df, prefix).items():
+            groups.append((classification, region, mask))
+
+    rows = []
+    for classification, region, class_mask in groups:
+        d_full = df.loc[class_mask]
+        if d_full.empty:
+            continue
+        full_img, full_count = image_from_events(d_full, residual[class_mask])
+
+        half_imgs = []
+        half_counts = []
+        for h in (0, 1):
+            m = class_mask & (half == h)
+            d = df.loc[m]
+            if d.empty:
+                half_imgs.append(np.full_like(full_img, np.nan))
+                half_counts.append(np.zeros_like(full_count))
+                continue
+            img, count = image_from_events(d, residual[m])
+            half_imgs.append(img)
+            half_counts.append(count)
+
+        n0, n1 = half_counts
+        valid = (
+            (full_count >= MIN_VOX_COUNT)
+            & (n0 >= min_half_count)
+            & (n1 >= min_half_count)
+            & np.isfinite(full_img)
+            & np.isfinite(half_imgs[0])
+            & np.isfinite(half_imgs[1])
+        )
+        if not np.any(valid):
+            rows.append(
+                dict(
+                    classification=classification,
+                    region=region,
+                    n_events=int(class_mask.sum()),
+                    n_voxels=0,
+                    observed_rms=np.nan,
+                    split_difference_rms=np.nan,
+                    noise_rms_full_est=np.nan,
+                    physical_rms_quadrature=np.nan,
+                    min_half_count=min_half_count,
+                    split_seed=int(seed),
+                )
+            )
+            continue
+
+        observed = full_img[valid]
+        split_diff = half_imgs[0][valid] - half_imgs[1][valid]
+        scale = np.sqrt(n0[valid] * n1[valid]) / (n0[valid] + n1[valid])
+        noise_realization = split_diff * scale
+        observed_rms = float(np.sqrt(np.mean(observed**2)))
+        split_diff_rms = float(np.sqrt(np.mean(split_diff**2)))
+        noise_rms = float(np.sqrt(np.mean(noise_realization**2)))
+        physical = math.sqrt(max(observed_rms**2 - noise_rms**2, 0.0))
+        rows.append(
+            dict(
+                classification=classification,
+                region=region,
+                n_events=int(class_mask.sum()),
+                n_voxels=int(np.sum(valid)),
+                observed_rms=observed_rms,
+                split_difference_rms=split_diff_rms,
+                noise_rms_full_est=noise_rms,
+                physical_rms_quadrature=physical,
+                noise_fraction=noise_rms / observed_rms if observed_rms else np.nan,
+                min_half_count=min_half_count,
+                split_seed=int(seed),
+            )
+        )
+    return pd.DataFrame(rows)
+
+
 def path_class_migration(df):
-    """Truth-vs-reconstructed Al-only classification for the off-Cu test."""
-    st = segment_matrix(df, "ref_true")
-    sr = segment_matrix(df, "ref_reco")
-    t = (st[:, 1] + st[:, 2] + st[:, 3]) <= 1e-8
-    r = (sr[:, 1] + sr[:, 2] + sr[:, 3]) <= 1e-8
+    """Truth-vs-reconstructed Al-only classification for the reference geometry."""
+    t = _reference_class_masks(df, "ref_true")["Al-only"]
+    r = _reference_class_masks(df, "ref_reco")["Al-only"]
     return pd.DataFrame(
         [
             dict(
@@ -433,7 +531,7 @@ def path_class_migration(df):
 
 
 def adaptive_retention(df, k_opt=1.800):
-    """Step 6.1 adaptive-selection diagnostic with explicit denominators.
+    """Adaptive-selection diagnostic with explicit denominators.
 
     Primary retention is defined relative to *all generated events* in each
     truth/reconstructed class.  A second conditional row reports retention
@@ -484,6 +582,22 @@ def adaptive_retention(df, k_opt=1.800):
             )
     return pd.DataFrame(rows)
 
+def _rms(a):
+    a = np.asarray(a, float)
+    a = a[np.isfinite(a)]
+    return float(np.sqrt(np.mean(a * a))) if a.size else np.nan
+
+
+def optimal_global_scale(I_nom, I_Q, valid):
+    """Return c minimizing ||I_nom/c - I_Q||_2 over ``valid`` voxels."""
+    x = np.asarray(I_nom, float)[valid]
+    y = np.asarray(I_Q, float)[valid]
+    den = float(x @ y)
+    num = float(x @ x)
+    if x.size == 0 or not np.isfinite(den) or den <= 0.0 or num <= 0.0:
+        return np.nan
+    return num / den
+
 
 def analyze_events(df, outdir, cache=None):
     out = Path(outdir)
@@ -492,33 +606,59 @@ def analyze_events(df, outdir, cache=None):
     weights, cache = build_weights(use, cache=cache)
     images = {}
     counts = None
-    metric_rows = []
+
+    # First construct all event-defined image estimators.
     for name in ("I_nom", "I_p", "I_Q", "I_ideal", "I_const"):
         img, c = image_from_events(use, weights[name])
         images[name] = img
         counts = c
-        metric_rows.append(dict(image=name, **image_metrics(img, c)))
-    pd.DataFrame(metric_rows).to_csv(out / "metrics.csv", index=False)
-    path_residual_diagnostics(use, weights).to_csv(
-        out / "path_residuals.csv", index=False
-    )
-    path_class_migration(use).to_csv(out / "path_class_migration.csv", index=False)
-    adaptive_retention(df).to_csv(out / "adaptive_retention.csv", index=False)
 
-    # Nominal-minus-Q artifact remains descriptive unless the gradient experiment is used.
-    valid = (
+    # Exact one-parameter scale-null control requested in the manuscript:
+    # minimize RMS(I_nom/c - I_Q) over the same valid voxel population.
+    valid_scale = (
         (counts >= MIN_VOX_COUNT)
         & np.isfinite(images["I_nom"])
         & np.isfinite(images["I_Q"])
     )
-    A = images["I_nom"] - images["I_Q"]
-    R = images["I_p"] - images["I_Q"]
-    artifact = dict(
-        artifact_rms=float(np.sqrt(np.mean(A[valid] ** 2))),
-        p_residual_rms=float(np.sqrt(np.mean(R[valid] ** 2))),
+    c_opt = optimal_global_scale(images["I_nom"], images["I_Q"], valid_scale)
+    images["I_scale_opt"] = (
+        images["I_nom"] / c_opt if np.isfinite(c_opt) and c_opt > 0 else np.full_like(images["I_nom"], np.nan)
     )
-    artifact["p_reduction"] = (
-        1.0 - artifact["p_residual_rms"] / artifact["artifact_rms"]
+
+    metric_rows = []
+    for name in ("I_nom", "I_const", "I_scale_opt", "I_p", "I_Q", "I_ideal"):
+        metric_rows.append(dict(image=name, **image_metrics(images[name], counts)))
+    pd.DataFrame(metric_rows).to_csv(out / "metrics.csv", index=False)
+
+    path_residual_diagnostics(use, weights).to_csv(
+        out / "path_residuals.csv", index=False
+    )
+    split_half_noise_diagnostics(use, weights).to_csv(
+        out / "split_half_noise.csv", index=False
+    )
+    path_class_migration(use).to_csv(out / "path_class_migration.csv", index=False)
+    adaptive_retention(df).to_csv(out / "adaptive_retention.csv", index=False)
+
+    valid = valid_scale
+    A = images["I_nom"] - images["I_Q"]
+    C = images["I_const"] - images["I_Q"]
+    S = images["I_scale_opt"] - images["I_Q"]
+    R = images["I_p"] - images["I_Q"]
+    artifact_rms = _rms(A[valid])
+    const_rms = _rms(C[valid])
+    scale_rms = _rms(S[valid])
+    p_rms = _rms(R[valid])
+    artifact = dict(
+        artifact_rms=artifact_rms,
+        const_residual_rms=const_rms,
+        scale_opt_residual_rms=scale_rms,
+        p_residual_rms=p_rms,
+        const_reduction=1.0 - const_rms / artifact_rms if artifact_rms else np.nan,
+        scale_opt_reduction=1.0 - scale_rms / artifact_rms if artifact_rms else np.nan,
+        p_reduction=1.0 - p_rms / artifact_rms if artifact_rms else np.nan,
+        c_opt=c_opt,
+        denominator_scale_opt=math.sqrt(c_opt) if np.isfinite(c_opt) and c_opt > 0 else np.nan,
+        n_valid_voxels=int(np.sum(valid)),
     )
     pd.DataFrame([artifact]).to_csv(out / "artifact_summary.csv", index=False)
 
@@ -528,7 +668,9 @@ def analyze_events(df, outdir, cache=None):
             dict(
                 eps_bar_event_mean=weights["eps_bar_event_mean"],
                 eps_bar_nominal_weighted=weights["eps_bar_nominal_weighted"],
-                I_const_uses="event-count mean",
+                I_const_uses="event-count mean epsilon",
+                I_scale_opt_uses="voxel RMS optimum of I_nom/c against I_Q",
+                c_opt=c_opt,
                 mean_dp_over_p=float(
                     np.mean(weights["p_out_reco"] / use.p_meas.to_numpy() - 1.0)
                 ),
@@ -538,7 +680,6 @@ def analyze_events(df, outdir, cache=None):
         ]
     ).to_csv(out / "calibration_summary.csv", index=False)
     return images, counts, weights, cache
-
 
 def analyze_gradient(df, outdir, cache=None):
     """Step 5 direct causal test: observed difference, predicted field, residual."""
@@ -601,16 +742,26 @@ def analyze_gradient(df, outdir, cache=None):
 
 
 def paired_seed_summary(metric_files, out_csv=None):
-    """Paired seed differences for schemes sharing the same event realizations."""
+    """Paired seed differences plus absolute metric means for each comparison."""
     rows = []
+    comparisons = (
+        ("I_nom", "I_Q"),
+        ("I_const", "I_Q"),
+        ("I_scale_opt", "I_Q"),
+        ("I_p", "I_Q"),
+    )
     for seed, f in enumerate(metric_files):
         d = pd.read_csv(f).set_index("image")
-        for a, b in (("I_nom", "I_Q"), ("I_p", "I_Q")):
+        for a, b in comparisons:
             if a in d.index and b in d.index:
                 rows.append(
                     dict(
                         seed=seed,
                         comparison=f"{a}-{b}",
+                        SNR_a=d.loc[a, "SNR_Pb"],
+                        SNR_b=d.loc[b, "SNR_Pb"],
+                        CNR_a=d.loc[a, "CNR"],
+                        CNR_b=d.loc[b, "CNR"],
                         dSNR=d.loc[a, "SNR_Pb"] - d.loc[b, "SNR_Pb"],
                         dCNR=d.loc[a, "CNR"] - d.loc[b, "CNR"],
                     )
@@ -619,6 +770,10 @@ def paired_seed_summary(metric_files, out_csv=None):
     summary = (
         raw.groupby("comparison")
         .agg(
+            SNR_a_mean=("SNR_a", "mean"),
+            SNR_b_mean=("SNR_b", "mean"),
+            CNR_a_mean=("CNR_a", "mean"),
+            CNR_b_mean=("CNR_b", "mean"),
             dSNR_mean=("dSNR", "mean"),
             dSNR_sd=("dSNR", "std"),
             dCNR_mean=("dCNR", "mean"),
@@ -631,4 +786,6 @@ def paired_seed_summary(metric_files, out_csv=None):
     )
     if out_csv is not None:
         summary.to_csv(out_csv, index=False)
+        raw_path = Path(out_csv).with_name(Path(out_csv).stem + "_raw.csv")
+        raw.to_csv(raw_path, index=False)
     return summary
