@@ -1,110 +1,174 @@
-# mstSim -- Geant4 cross-check (manuscript Sec. 3)
+# Geant4 validation (independent transport benchmark)
 
-Fires a monoenergetic mu- beam through a single Cu or Pb slab and records
-each primary's exit angle. Feeds directly into `geant4_compare.py` (in the
-main project, one level up), which compares the simulated in-acceptance
-RMS to the manuscript's deterministic quadrature.
-
-**Not built or run in this environment** -- this is source code, written to
-be buildable as-is against an installed Geant4. Verify against your own
-Geant4 version before trusting the output; see the two `[VERIFY]` notes
-below.
-
-## What it does
-
-- Single slab, material and thickness set at run time (`Cu`/`Pb`, any
-  thickness in cm).
-- mu- beam, momentum set at run time (converted to kinetic energy
-  internally: `mstSim.cc` computes `E_kin = sqrt(p^2 + m_mu^2) - m_mu`).
-- Two MSC-model configurations, selected via Geant4's reference physics
-  list factory: `urban` -> `FTFP_BERT` (Geant4's default MSC), `wentzel`
-  -> `FTFP_BERT_WVI` (Wentzel-VI + single Coulomb scattering). **[VERIFY]**
-  the `_WVI` suffix is a documented Geant4 feature but is version-sensitive;
-  confirm `FTFP_BERT_WVI` builds without error on your Geant4 install
-  before trusting the "wentzel" runs. `PhysicsListFactory.hh` documents the
-  manual fallback (`G4EmConfigurator` + `G4WentzelVIModel`) if it doesn't.
-- A thin vacuum "scoring plane" immediately downstream of the slab; the
-  primary's exit angle relative to the beam axis is written the instant it
-  crosses into that plane, then the track is killed.
-- Energy loss is **enabled** (unlike the beamline simulation in the main
-  project, which deliberately omits it) -- this matches the manuscript's
-  Sec. 3 statement that "energy loss is enabled in Geant4 but the incident
-  momentum is used in the comparison." **[VERIFY]** if you want the
-  no-energy-loss control the manuscript also describes for the low-momentum
-  settings, disable energy loss physics processes for mu- in
-  `PhysicsListFactory.cc` (e.g. via `G4EmParameters` or a custom process
-  table edit) -- not implemented here, since it changes physics-list
-  internals in a way that's easy to get subtly wrong without testing
-  against a live build.
-
-## Build
-
-```bash
-mkdir build && cd build
-cmake -DGeant4_DIR=/path/to/geant4-install/lib/Geant4-11.x ..
-make -j4
-```
-
-Requires Geant4 >= 10.7 (uses `G4RunManagerFactory`; the pattern here
-targets 11.x). No Geant4 UI/Vis libraries are required (batch-only, no
-macros, no visualization) -- a minimal Geant4 build without Qt/OpenGL is
-sufficient.
-
-## Run one configuration
-
-```bash
-./build/mstSim urban Cu 15.0 1.0 500000 out/Cu_t15.0_p1.0_urban.txt
-```
-
-Arguments: `<urban|wentzel> <Cu|Pb> <thickness_cm> <p_GeV> <nEvents> <outFile>`.
-
-Output: one `theta_space` value (rad) per line -- the primary muon's exit
-angle relative to the beam axis, for every event whose primary reached the
-scoring plane. `RunAction` prints how many events were written vs.
-generated at the end of the run; if this drops noticeably below 100% at low
-momentum, check whether primaries are ranging out or backscattering in the
-thicker slabs before trusting the tail of the distribution.
-
-## Run the full sweep
-
-```bash
-cd build   # or wherever mstSim was built
-../run_sweep.sh 500000 out
-```
-
-32 configurations (2 materials x 2 thicknesses x 4 momenta x 2 models),
-matching the manuscript's per-material path lengths (Sec. 5.2's k_opt
-table: Cu at x/X0 = 2.08, 10.42; Pb at x/X0 = 3.57, 14.29). Each
-configuration is fully independent -- for anything beyond a quick check,
-run the 32 jobs in parallel (e.g. `GNU parallel`, a Slurm array, or similar)
-rather than serially inside the loop as written.
-
-## Analyze against the quadrature
-
-From the main project directory:
-
-```bash
-python3 geant4_compare.py --file geant4/out/Cu_t15.0_p1.0_urban.txt \
-    --material Cu --thickness_cm 15.0 --p 1.0 --model urban
-```
-
-Repeat for each of the 32 output files. `geant4_compare.py` computes the
-in-acceptance (200 mrad) RMS from the Geant4 dump, compares it to
-`quadrature.theta_rms` for the same configuration, and checks the
-difference against the published Urban/Wentzel-VI model spread
-(Makarova et al. 2017) plus the manuscript's ~1% planar-correlation
-systematic -- see that script's docstring for the pass criterion.
+This documents the external transport benchmark referenced as the
+`geant4_compare.py` hook in the main README (caution #3). It cross-checks the
+constant-p radial Molière n≤2 model against single-material Geant4 slabs for
+Cu and Pb over the four production momenta. It is a standalone stage: the C++
+application produces per-event exit-angle dumps; the Python side compares them
+against `constant_calibration` from `physics.py`.
 
 ## Layout
 
-| File | Role |
-|---|---|
-| `mstSim.cc` | Main driver; fully argument-driven (no macros needed for the sweep). |
-| `include/`, `src/DetectorConstruction.*` | Slab + scoring-plane geometry. |
-| `include/`, `src/DetectorMessenger.*` | `/det/setMaterial`, `/det/setThickness` UI commands. |
-| `include/`, `src/PhysicsListFactory.*` | Urban vs. Wentzel-VI selection. |
-| `include/`, `src/PrimaryGeneratorAction.*` | mu- gun. |
-| `include/`, `src/RunAction.*` | Output file lifecycle. |
-| `include/`, `src/SteppingAction.*` | Scores the primary's exit angle. |
-| `run_sweep.sh` | Drives the full 32-configuration sweep. |
-| `CMakeLists.txt` | Build configuration. |
+```
+geant4/
+  mstSim.cc                 # main(): parses <model> <material> <t_cm> <p_GeV> <N> <outfile>
+  include/                  # headers
+  src/
+    PhysicsListFactory.cc   # BuildPhysicsList(model): urban -> FTFP_BERT, wentzel -> FTFP_BERT_WVI
+    DetectorConstruction.cc # single centered slab, material/thickness from CLI
+    PrimaryGeneratorAction.cc  # pencil mu- beam, +z, momentum from CLI
+    SteppingAction.cc       # records primary space-angle at slab exit
+    RunAction.cc            # writes theta_space (rad), one per line; reports non-exiting yield
+    DetectorMessenger.cc
+  build/mstSim              # compiled binary (not committed)
+  out/                      # angle dumps + analysis outputs (not committed)
+  plot_geant4.py            # convergence, cu_sweep, pb_sweep, impact_table stages
+```
+
+## Environment
+
+Geant4 11.x with data, obtained via conda-forge (no local toolkit build):
+
+```bash
+conda install -c conda-forge geant4
+conda activate geant4
+geant4-config --version        # expect 11.x
+echo $G4LEDATA                 # must be non-empty
+```
+
+macOS note: the reference lists link `libG4OpenGL`, so the binary needs an
+rpath to the conda lib dir even for batch (no-vis) running. This is baked in at
+link time below; it is not a runtime environment variable.
+
+## Build (no cmake)
+
+`geant4-config` emits the flags directly. `mstSim.cc` is at the top level; the
+other sources are in `src/`, so both must appear on the compile line:
+
+```bash
+cd geant4
+mkdir -p build
+clang++ -std=c++17 -Iinclude mstSim.cc src/*.cc -o build/mstSim \
+  $(geant4-config --cflags) $(geant4-config --libs) \
+  -Wl,-rpath,$(geant4-config --prefix)/lib
+./build/mstSim                 # prints usage line = success
+```
+
+## CLI
+
+```
+./build/mstSim <urban|wentzel> <Cu|Pb> <thickness_cm> <p_GeV> <nEvents> <outFile>
+```
+
+`urban` selects `FTFP_BERT` (Urban muon MSC); `wentzel` selects
+`FTFP_BERT_WVI`. Both reference lists already register muon
+`G4CoulombScattering`; the single-scatter tail is not suppressed and does not
+need to be added. Output is one `theta_space` value (radians) per primary that
+reaches the exit plane. `RunAction` reports any primaries that do not exit
+(stopped/backscattered); this is <0.05% even for 8 cm Pb at 1 GeV/c and does
+not affect truncated moments.
+
+## Reproduce the validation
+
+Production statistics are `N = 1e6`, fixed by the convergence stage below.
+
+Convergence (sets N):
+
+```bash
+mkdir -p out
+for N in 10000 100000 1000000 3000000; do
+  ./build/mstSim urban Cu 15.0 2.0 $N out/conv_Cu15_p2_urban_N${N}.txt
+done
+python plot_geant4.py convergence      # writes out/convergence.png
+```
+
+Cu and Pb sweeps (16 dumps each; parallel across cores):
+
+```bash
+# Cu: {3,15} cm x {1,2,3.5,6} GeV x {urban,wentzel}
+printf '%s\n' 3.0 15.0 | while read t; do for p in 1.0 2.0 3.5 6.0; do for m in urban wentzel; do
+  echo "$m Cu $t $p 1000000 out/Cu_t${t}_p${p}_${m}.txt"
+done; done; done | xargs -P 4 -L 1 ./build/mstSim
+
+# Pb: {2,8} cm x {1,2,3.5,6} GeV x {urban,wentzel}
+printf '%s\n' 2.0 8.0 | while read t; do for p in 1.0 2.0 3.5 6.0; do for m in urban wentzel; do
+  echo "$m Pb $t $p 1000000 out/Pb_t${t}_p${p}_${m}.txt"
+done; done; done | xargs -P 4 -L 1 ./build/mstSim
+```
+
+Analysis (project venv, where `physics.py`/`analysis.py` import):
+
+```bash
+conda deactivate
+source /path/to/venv/bin/activate
+cd geant4
+python plot_geant4.py cu_sweep         # stage1_Cu.csv/.png
+python plot_geant4.py pb_sweep         # stage1_Pb.csv/.png
+python plot_geant4.py impact_table     # impact_200mrad.csv
+python plot_geant4.py impact_figure    # out/geant4_impact_summary.{png,pdf}
+```
+
+The two-environment split is intentional: the C++ binary runs in the `geant4`
+conda env; the comparison imports the model from the project venv. They
+communicate only through the `.txt` dumps on disk, so the model is a single
+source of truth (no reimplementation on the conda side).
+
+## What the stages report
+
+- `convergence` — truncated `theta_rms` at k=10 vs N. Drift falls below the
+  0.5% target by N=1e6 (0.05%); production N is fixed there.
+- `cu_sweep` / `pb_sweep` — per (thickness, momentum, k) fractional truncated-
+  RMS difference (quadrature vs Geant4-urban) with a 200-sample bootstrap CI,
+  and the Urban/Wentzel spread. k∈{2,5,10,20,40}.
+- `impact_table` — the same fractional difference evaluated at the **physical
+  200 mrad cut** rather than a reduced k, plus where 200 mrad falls in k for
+  each config. This is the production-relevant impact. Writes
+  `out/impact_200mrad.csv`.
+- `impact_figure` — one-panel summary of `impact_table`: the truncated-RMS
+  difference at 200 mrad versus the reduced angle k at which the cut falls,
+  colored by material, with bootstrap error bars. Writes
+  `out/geant4_impact_summary.{png,pdf}` (the `.pdf` is the paper figure). If
+  the impact CSV is absent it is generated first, so this stage is
+  self-sufficient given the dumps.
+
+## Findings (conditional on this configuration)
+
+1. **Core agreement.** At k=2 (and at the physical cut for low-k configs) the
+   quadrature and Geant4 truncated RMS agree at the few-percent level across
+   Al/Cu/Pb and 1–6 GeV/c. The empirical Geant4 core width matches the
+   quadrature `theta_space` to <1% (Cu 15 cm, 6 GeV/c: 11.38 vs 11.29 mrad).
+
+2. **Tail divergence, ordered by reduced angle.** The truncated-RMS difference
+   grows monotonically with k, from ~0% near the core to −10…−16% by k=20–40.
+   The size tracks reduced angle k almost independently of material/thickness,
+   and is larger for higher Z and greater thickness — consistent with the
+   difference between the model Rutherford Θ⁻³ continuation and Geant4's
+   form-factor-suppressed large-angle single scattering.
+
+3. **Model degeneracy at the observable.** At the 200 mrad cut the Urban and
+   Wentzel reference lists agree to ~0.2%, so they do not supply a transport
+   band there. The two models differ only in the far-tail *slope* (survival
+   log-slope in u∈[8,40] roughly −2.5 vs −2.9, vs the Rutherford −2.0), which
+   does not propagate strongly to the truncated second moment.
+
+4. **Production relevance.** Thick, low-momentum reference paths sit at low k
+   (Cu 15 cm/1 GeV: k≈4; Pb 8 cm/1–2 GeV: k≈3.5–7) and agree to within a few
+   percent. Thin, high-momentum paths sit at high k (k≈25–60) and carry the
+   full −10…−14% difference. This is the same thin/high-p regime that carries
+   the largest reconstructed-path residual in the production analysis.
+
+## Scope and limitations
+
+- Single-material slabs only. The composite Al+Cu production path is not built
+  here (the detector places one centered slab); a two-layer geometry is the
+  next extension if the energy-loss p(X) construction is to be benchmarked
+  directly.
+- `SetMscThetaLimit` in the factory is global (affects e± as well); harmless
+  for a muon-only slab but revisit before reuse in mixed jobs.
+- The far-tail slope is not resolvable at N=1e6: beyond u≈20 the survival
+  function is at 1e-5–1e-6, so per-window slope fits are Poisson-noise limited
+  and are reported only as an order-of-magnitude bracket, not a fitted power.
+- Reproducibility: each `mstSim` invocation uses the Geant4 default engine
+  seed. Parallel `xargs` runs are independent; results are statistically
+  reproducible at the quoted CIs, not bitwise identical across runs.
+```
