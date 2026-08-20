@@ -7,7 +7,16 @@ import argparse
 from pathlib import Path
 import pandas as pd
 
-from analysis import analyze_events, analyze_gradient, paired_seed_summary, run_theory
+from analysis import (
+    analyze_events,
+    analyze_gradient,
+    ensemble_adaptive_summary,
+    ensemble_artifact_summary,
+    paired_seed_summary,
+    refresh_gradient_summary,
+    refresh_image_summaries,
+    run_theory,
+)
 from plots import plot_gradient, plot_images, plot_theory
 from simulation import (
     load_events,
@@ -38,6 +47,9 @@ def main():
     p.add_argument("file")
     p.add_argument("--out", required=True)
     p.add_argument("--gradient", action="store_true")
+
+    p = sub.add_parser("postprocess")
+    p.add_argument("outdirs", nargs="+", help="existing result directories containing images.npz")
 
     p = sub.add_parser("paired")
     p.add_argument(
@@ -87,10 +99,30 @@ def main():
             analyze_events(df, a.out)
         return
 
+    if a.cmd == "postprocess":
+        for d in a.outdirs:
+            d = Path(d)
+            if (d / "images.npz").exists():
+                row = refresh_image_summaries(d)
+                print(d, row)
+            elif (d / "gradient_maps.npz").exists():
+                print(refresh_gradient_summary(d).to_string(index=False))
+            else:
+                raise FileNotFoundError(f"{d}: no images.npz or gradient_maps.npz")
+        return
+
     if a.cmd == "paired":
         out = Path(a.out)
         out.parent.mkdir(parents=True, exist_ok=True)
         summary = paired_seed_summary(a.metrics, out_csv=out)
+        artifact_files = [Path(f).with_name("artifact_summary.csv") for f in a.metrics]
+        artifact_files = [f for f in artifact_files if f.exists()]
+        if artifact_files:
+            ensemble_artifact_summary(artifact_files, out.parent / "paired_artifact_summary.csv")
+        adaptive_files = [Path(f).with_name("adaptive_retention.csv") for f in a.metrics]
+        adaptive_files = [f for f in adaptive_files if f.exists()]
+        if adaptive_files:
+            ensemble_adaptive_summary(adaptive_files, out.parent / "paired_adaptive_retention.csv")
         print(summary.to_string(index=False))
         return
 

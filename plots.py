@@ -39,10 +39,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 try:
-    from config import MIN_VOX_COUNT, VOX_HALF
+    from config import AL_HALF, MIN_VOX_COUNT, VOX_HALF, VOX_SIZE
 except Exception:
+    AL_HALF = 12.5
     MIN_VOX_COUNT = 20
     VOX_HALF = 15.0
+    VOX_SIZE = 0.6
 
 
 # ---------------------------------------------------------------------------
@@ -159,11 +161,21 @@ def _central(arr: np.ndarray) -> np.ndarray:
     return arr[:, :, arr.shape[2] // 2]
 
 
+def _central_fiducial_mask(n: int) -> np.ndarray:
+    edges = np.linspace(-VOX_HALF, VOX_HALF, n + 1)
+    centers = 0.5 * (edges[1:] + edges[:-1])
+    X, Y = np.meshgrid(centers, centers, indexing="ij")
+    half = 0.5 * (2.0 * VOX_HALF / n)
+    return (np.abs(X) + half <= AL_HALF + 1e-12) & (np.abs(Y) + half <= AL_HALF + 1e-12)
+
+
 def _masked_central(z, name: str, min_count: int = MIN_VOX_COUNT) -> np.ndarray:
     a = _central(z[name]).astype(float, copy=True)
+    valid = _central_fiducial_mask(a.shape[0])
     if "counts" in z.files:
         c = _central(z["counts"])
-        a[c < min_count] = np.nan
+        valid &= c >= min_count
+    a[~valid] = np.nan
     return a
 
 
@@ -463,6 +475,56 @@ def plot_images(
         _save(fig, out, "artifact_summary", figdir)
 
 
+def plot_artifact_ensemble(csv_path: Path, figdir: Path | None = None):
+    if not csv_path.exists():
+        return
+    d = pd.read_csv(csv_path).set_index("metric")
+    needed = ["artifact_rms", "scale_opt_residual_rms", "p_residual_rms"]
+    if not all(k in d.index for k in needed):
+        return
+    source = csv_path.parent / "production"
+    figdir = _figdir(csv_path.parent) if figdir is None else figdir
+    labels = [r"$I_{\rm nom}-I_Q$", r"$I_{\rm nom}/c_*-I_Q$", r"$I_p-I_Q$"]
+    vals = [d.loc[k, "mean"] for k in needed]
+    errs = [d.loc[k, "sd"] for k in needed]
+    fig, ax = plt.subplots(figsize=(5.7, 3.2))
+    x = np.arange(3)
+    bars = ax.bar(x, vals, yerr=errs, capsize=3)
+    ax.bar_label(bars, labels=[f"{v:.4f}" for v in vals], padding=3, fontsize=8)
+    ax.set_xticks(x, labels)
+    ax.set_yscale("log")
+    ax.set_ylabel("fiducial image RMS difference")
+    c = d.loc["c_opt", "mean"] if "c_opt" in d.index else np.nan
+    post = d.loc["post_scalar_p_reduction", "mean"] if "post_scalar_p_reduction" in d.index else np.nan
+    if np.isfinite(c) and np.isfinite(post):
+        ax.text(0.98, 0.95, rf"$c_*={c:.4f}$" + "\n" + f"post-scalar reduction = {100*post:.1f}%",
+                transform=ax.transAxes, ha="right", va="top", fontsize=8)
+    fig.tight_layout()
+    _save(fig, source, "fiducial_summary", figdir)
+
+
+def plot_adaptive_ensemble(csv_path: Path, figdir: Path | None = None):
+    if not csv_path.exists():
+        return
+    d = pd.read_csv(csv_path)
+    if d.empty:
+        return
+    source = csv_path.parent / "adaptive"
+    figdir = _figdir(csv_path.parent) if figdir is None else figdir
+    fig, axes = plt.subplots(1, 2, figsize=(7.3, 3.1), sharey=True)
+    for ax, classification in zip(axes, ["truth", "reconstructed"]):
+        g = d[d.classification == classification]
+        x = np.arange(len(g))
+        bars = ax.bar(x, 100.0 * g.retention_mean, yerr=100.0 * g.retention_sd, capsize=3)
+        ax.bar_label(bars, labels=[f"{100*v:.1f}%" for v in g.retention_mean], padding=3, fontsize=8)
+        ax.set_xticks(x, g.group, rotation=12)
+        ax.set_ylim(0, 100)
+        ax.set_title(classification)
+    axes[0].set_ylabel("adaptive-cut retention (%)")
+    fig.tight_layout()
+    _save(fig, source, "retention_ensemble", figdir)
+
+
 # ---------------------------------------------------------------------------
 # Gradient figure
 
@@ -546,13 +608,18 @@ def plot_paired(csv_path: Path, figdir: Path | None = None):
     figdir = _figdir(csv_path.parent) if figdir is None else figdir
     fig, axes = plt.subplots(1, 2, figsize=(7.0, 3.0))
     x = np.arange(len(d))
+    display = {
+        "I_nom-I_Q": r"$I_{\rm nom}-I_Q$",
+        "I_p-I_Q": r"$I_p-I_Q$",
+    }
+    ticklabels = [display.get(v, v) for v in d.comparison]
     axes[0].errorbar(x, d.dSNR_mean, yerr=d.dSNR_sd, fmt="o", capsize=3)
     axes[0].axhline(0.0, color="k", lw=0.8)
-    axes[0].set_xticks(x, d.comparison, rotation=20, ha="right")
+    axes[0].set_xticks(x, ticklabels)
     axes[0].set_ylabel(r"paired $\Delta$SNR")
     axes[1].errorbar(x, d.dCNR_mean, yerr=d.dCNR_sd, fmt="o", capsize=3)
     axes[1].axhline(0.0, color="k", lw=0.8)
-    axes[1].set_xticks(x, d.comparison, rotation=20, ha="right")
+    axes[1].set_xticks(x, ticklabels)
     axes[1].set_ylabel(r"paired $\Delta$CNR")
     fig.tight_layout()
     _save(fig, source, "seed_summary", figdir)
@@ -588,6 +655,12 @@ def run_all(
     paired = root / "paired_seed_summary.csv"
     if paired.exists():
         plot_paired(paired, figdir)
+    artifact_ensemble = root / "paired_artifact_summary.csv"
+    if artifact_ensemble.exists():
+        plot_artifact_ensemble(artifact_ensemble, figdir)
+    adaptive_ensemble = root / "paired_adaptive_retention.csv"
+    if adaptive_ensemble.exists():
+        plot_adaptive_ensemble(adaptive_ensemble, figdir)
 
     print(f"figures written to {figdir}")
     print(f"theory sources:   {len(theory_dirs)}")

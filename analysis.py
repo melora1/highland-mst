@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from config import (
+    AL_HALF,
     CU_HALF,
     CU_ROI_R,
     CU_ROI_ZHALF,
@@ -25,6 +26,7 @@ from config import (
     SPLIT_SEED,
     THETA_CUT,
     VOX_HALF,
+    VOX_SIZE,
 )
 from physics import (
     Layer,
@@ -45,6 +47,31 @@ from simulation import SEG_NAMES, segment_matrix
 
 EDGES = np.linspace(-VOX_HALF, VOX_HALF, N_VOX + 1)
 CENTERS = 0.5 * (EDGES[1:] + EDGES[:-1])
+
+
+def fiducial_voxel_mask():
+    """Voxels fully contained in the 25 cm outer Al cube.
+
+    Quantitative map statistics exclude boundary voxels that straddle the
+    physical target edge.  This prevents grazing reconstructed reference paths
+    from producing arbitrarily small denominators in partially outside voxels.
+    """
+    X, Y, Z = np.meshgrid(CENTERS, CENTERS, CENTERS, indexing="ij")
+    half = 0.5 * VOX_SIZE
+    tol = 1e-12
+    return (
+        (np.abs(X) + half <= AL_HALF + tol)
+        & (np.abs(Y) + half <= AL_HALF + tol)
+        & (np.abs(Z) + half <= AL_HALF + tol)
+    )
+
+
+def valid_voxel_mask(counts, *arrays, min_count=MIN_VOX_COUNT):
+    """Common quantitative voxel mask: occupancy, fiducial containment, finite data."""
+    valid = (np.asarray(counts) >= min_count) & fiducial_voxel_mask()
+    for a in arrays:
+        valid &= np.isfinite(np.asarray(a))
+    return valid
 
 
 def path_X(thicknesses):
@@ -371,8 +398,9 @@ def roi_masks():
 
 def image_metrics(img, counts):
     pb, cu = roi_masks()
-    pb &= counts >= MIN_VOX_COUNT
-    cu &= counts >= MIN_VOX_COUNT
+    valid = valid_voxel_mask(counts, img)
+    pb &= valid
+    cu &= valid
     a, b = img[pb], img[cu]
     a = a[np.isfinite(a)]
     b = b[np.isfinite(b)]
@@ -404,7 +432,7 @@ def path_residual_diagnostics(df, weights):
                 continue
             residual_event = weights["I_p"][mask] - weights["I_Q"][mask]
             residual_img, c = image_from_events(d, residual_event)
-            valid = (c >= MIN_VOX_COUNT) & np.isfinite(residual_img)
+            valid = valid_voxel_mask(c, residual_img)
             out.append(
                 dict(
                     classification=classification,
@@ -463,7 +491,8 @@ def split_half_noise_diagnostics(df, weights, seed=SPLIT_SEED, min_half_count=No
 
         n0, n1 = half_counts
         valid = (
-            (full_count >= MIN_VOX_COUNT)
+            fiducial_voxel_mask()
+            & (full_count >= MIN_VOX_COUNT)
             & (n0 >= min_half_count)
             & (n1 >= min_half_count)
             & np.isfinite(full_img)
@@ -615,10 +644,8 @@ def analyze_events(df, outdir, cache=None):
 
     # Exact one-parameter scale-null control requested in the manuscript:
     # minimize RMS(I_nom/c - I_Q) over the same valid voxel population.
-    valid_scale = (
-        (counts >= MIN_VOX_COUNT)
-        & np.isfinite(images["I_nom"])
-        & np.isfinite(images["I_Q"])
+    valid_scale = valid_voxel_mask(
+        counts, images["I_nom"], images["I_Q"]
     )
     c_opt = optimal_global_scale(images["I_nom"], images["I_Q"], valid_scale)
     images["I_scale_opt"] = (
@@ -659,6 +686,8 @@ def analyze_events(df, outdir, cache=None):
         c_opt=c_opt,
         denominator_scale_opt=math.sqrt(c_opt) if np.isfinite(c_opt) and c_opt > 0 else np.nan,
         n_valid_voxels=int(np.sum(valid)),
+        n_fiducial_voxels=int(np.sum(fiducial_voxel_mask())),
+        post_scalar_p_reduction=(1.0 - p_rms / scale_rms) if scale_rms else np.nan,
     )
     pd.DataFrame([artifact]).to_csv(out / "artifact_summary.csv", index=False)
 
@@ -676,6 +705,7 @@ def analyze_events(df, outdir, cache=None):
                 ),
                 screening_weight=cache.screening_weight,
                 max_clipped=cache.max_clipped,
+                fiducial_rule=f"voxel fully inside outer Al cube: |coord|+{0.5 * VOX_SIZE:.3f} <= {AL_HALF:.3f} cm",
             )
         ]
     ).to_csv(out / "calibration_summary.csv", index=False)
@@ -707,9 +737,7 @@ def analyze_gradient(df, outdir, cache=None):
         ("normalization_field", predicted_unweighted),
         ("wQ_weighted_closure", predicted_weighted),
     ):
-        valid = (
-            (counts >= MIN_VOX_COUNT) & np.isfinite(observed) & np.isfinite(predicted)
-        )
+        valid = valid_voxel_mask(counts, observed, predicted)
         x = predicted[valid]
         y = observed[valid]
         amp = float((x @ y) / (x @ x)) if x.size and (x @ x) > 0 else np.nan
@@ -741,13 +769,132 @@ def analyze_gradient(df, outdir, cache=None):
     return summaries
 
 
+def refresh_image_summaries(outdir):
+    """Recompute fiducial image-only summaries from an existing images.npz.
+
+    This does not replace event-level path-class or split-half diagnostics.  It
+    is useful when the event table is unavailable but the saved images are.
+    """
+    out = Path(outdir)
+    path = out / "images.npz"
+    with np.load(path) as z:
+        data = {k: z[k] for k in z.files}
+    counts = data["counts"]
+    valid = valid_voxel_mask(counts, data["I_nom"], data["I_Q"])
+    c_opt = optimal_global_scale(data["I_nom"], data["I_Q"], valid)
+    data["I_scale_opt"] = data["I_nom"] / c_opt
+    data["fiducial_mask"] = fiducial_voxel_mask()
+    np.savez_compressed(path, **data)
+
+    A = data["I_nom"] - data["I_Q"]
+    C = data["I_const"] - data["I_Q"]
+    S = data["I_scale_opt"] - data["I_Q"]
+    R = data["I_p"] - data["I_Q"]
+    artifact_rms = _rms(A[valid])
+    const_rms = _rms(C[valid])
+    scale_rms = _rms(S[valid])
+    p_rms = _rms(R[valid])
+    row = dict(
+        artifact_rms=artifact_rms,
+        const_residual_rms=const_rms,
+        scale_opt_residual_rms=scale_rms,
+        p_residual_rms=p_rms,
+        const_reduction=1.0 - const_rms / artifact_rms,
+        scale_opt_reduction=1.0 - scale_rms / artifact_rms,
+        p_reduction=1.0 - p_rms / artifact_rms,
+        c_opt=c_opt,
+        denominator_scale_opt=math.sqrt(c_opt),
+        n_valid_voxels=int(np.sum(valid)),
+        n_fiducial_voxels=int(np.sum(fiducial_voxel_mask())),
+        post_scalar_p_reduction=1.0 - p_rms / scale_rms,
+        image_only_refresh=True,
+    )
+    pd.DataFrame([row]).to_csv(out / "artifact_summary.csv", index=False)
+    return row
+
+
+def ensemble_artifact_summary(artifact_files, out_csv=None):
+    rows = []
+    for seed, f in enumerate(artifact_files):
+        d = pd.read_csv(f).iloc[0]
+        rows.append(dict(seed=seed, source=str(f), **d.to_dict()))
+    raw = pd.DataFrame(rows)
+    cols = [
+        "artifact_rms", "scale_opt_residual_rms", "p_residual_rms",
+        "scale_opt_reduction", "p_reduction", "post_scalar_p_reduction", "c_opt"
+    ]
+    summary_rows = []
+    for col in cols:
+        if col in raw:
+            summary_rows.append(dict(metric=col, mean=float(raw[col].mean()), sd=float(raw[col].std(ddof=1)), n=len(raw)))
+    summary = pd.DataFrame(summary_rows)
+    if out_csv is not None:
+        out_csv = Path(out_csv)
+        summary.to_csv(out_csv, index=False)
+        raw.to_csv(out_csv.with_name(out_csv.stem + "_raw.csv"), index=False)
+    return summary
+
+
+def ensemble_adaptive_summary(adaptive_files, out_csv=None):
+    rows = []
+    for seed, f in enumerate(adaptive_files):
+        d = pd.read_csv(f)
+        d = d[d.denominator == "all generated"].copy()
+        d["seed"] = seed
+        rows.append(d)
+    raw = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+    if raw.empty:
+        return raw
+    summary = (
+        raw.groupby(["classification", "group"], as_index=False)
+        .agg(retention_mean=("retention", "mean"), retention_sd=("retention", "std"), n_seeds=("seed", "count"))
+    )
+    if out_csv is not None:
+        out_csv = Path(out_csv)
+        summary.to_csv(out_csv, index=False)
+        raw.to_csv(out_csv.with_name(out_csv.stem + "_raw.csv"), index=False)
+    return summary
+
+
+def refresh_gradient_summary(outdir):
+    """Recompute the gradient summary from saved maps with the fiducial mask."""
+    out = Path(outdir)
+    with np.load(out / "gradient_maps.npz") as z:
+        counts = z["counts"]
+        observed = z["observed"]
+        preds = {
+            "normalization_field": z["predicted_unweighted"],
+            "wQ_weighted_closure": z["predicted_weighted"],
+        }
+    rows = []
+    for label, predicted in preds.items():
+        valid = valid_voxel_mask(counts, observed, predicted)
+        x = predicted[valid]
+        y = observed[valid]
+        amp = float((x @ y) / (x @ x)) if x.size and (x @ x) > 0 else np.nan
+        residual = y - amp * x
+        yrms = _rms(y)
+        rrms = _rms(residual)
+        rows.append(dict(
+            predictor=label,
+            amplitude=amp,
+            correlation=float(np.corrcoef(x, y)[0, 1]) if x.size > 1 else np.nan,
+            observed_rms=yrms,
+            residual_rms=rrms,
+            residual_fraction=rrms / yrms if yrms else np.nan,
+            n_valid_voxels=int(np.sum(valid)),
+            image_only_refresh=True,
+        ))
+    d = pd.DataFrame(rows)
+    d.to_csv(out / "gradient_summary.csv", index=False)
+    return d
+
+
 def paired_seed_summary(metric_files, out_csv=None):
     """Paired seed differences plus absolute metric means for each comparison."""
     rows = []
     comparisons = (
         ("I_nom", "I_Q"),
-        ("I_const", "I_Q"),
-        ("I_scale_opt", "I_Q"),
         ("I_p", "I_Q"),
     )
     for seed, f in enumerate(metric_files):

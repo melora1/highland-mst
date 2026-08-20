@@ -12,8 +12,8 @@ import math
 import sys
 import numpy as np
 
-from analysis import PATHS, optimal_global_scale
-from config import MATERIALS, MOMENTA, RADIAL_ETA_MAX, THETA_CUT
+from analysis import CENTERS, PATHS, fiducial_voxel_mask, optimal_global_scale
+from config import AL_HALF, MATERIALS, MOMENTA, RADIAL_ETA_MAX, THETA_CUT, VOX_SIZE
 from geometry import trace_paths
 from physics import (
     Layer,
@@ -300,6 +300,20 @@ def stopping_minimum_indirect_closure():
     d = validate_stopping_minima()
     for m, r in d.items():
         assert abs(r["rel"]) < 0.01, (m, r)
+
+
+@test
+def fiducial_mask_keeps_only_fully_contained_voxels():
+    m = fiducial_voxel_mask()
+    assert m.shape == (len(CENTERS), len(CENTERS), len(CENTERS))
+    half = 0.5 * VOX_SIZE
+    keep = np.where(np.abs(CENTERS) + half <= AL_HALF + 1e-12)[0]
+    drop = np.where(np.abs(CENTERS) + half > AL_HALF + 1e-12)[0]
+    assert keep.size > 0 and drop.size > 0
+    assert np.all(m[np.ix_(keep, keep, keep)])
+    assert not np.any(m[drop, :, :])
+    assert not np.any(m[:, drop, :])
+    assert not np.any(m[:, :, drop])
 
 
 @test
