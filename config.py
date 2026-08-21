@@ -87,6 +87,7 @@ PB_ROI_R = 2.0
 PB_ROI_ZHALF = 7.5
 CU_ROI_R = 3.75
 CU_ROI_ZHALF = 7.5
+ROI_GUARD_GAPS_CM = (0.0, 0.6, 1.2)
 
 # Numerical controls
 P_CACHE_STEP = 0.010  # GeV/c

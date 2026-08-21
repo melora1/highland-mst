@@ -139,7 +139,8 @@ def main():
     ap.add_argument("--p", type=float, required=True)
     ap.add_argument("--energy-loss", action="store_true", help="compare against segmented p(X); default is constant-p")
     ap.add_argument("--k", type=float, nargs="+", default=[2, 5, 10, 20, 40])
-    ap.add_argument("--u-bands", type=float, nargs="+", default=[0, 3, 10, 20, 40], help="finite reduced-angle edges for M2 band decomposition")
+    ap.add_argument("--theta-cut-mrad", type=float, nargs="+", default=[200.0], help="physical angular cuts to evaluate in addition to --k")
+    ap.add_argument("--u-bands", type=float, nargs="+", default=[0, 3, 10, 20, 40, 80], help="finite reduced-angle edges for M2 band decomposition")
     ap.add_argument("--n-generated", type=int, default=None, help="number of primaries; permits exit fraction and Fc relative to all generated events")
     ap.add_argument("--out", default=None, help="truncated-moment CSV")
     ap.add_argument("--core-out", default=None, help="core-width CSV; defaults beside --out")
@@ -188,8 +189,14 @@ def main():
             dict(transport=lab, target=target_label, p=a.p, **r)
             for r in band_decomposition(ang, model_at, theta0, bands, a.n_generated)
         )
-        for k in a.k:
-            cut = float(k) * theta0
+        cuts = [("reduced_k", float(k) * theta0, float(k)) for k in a.k]
+        cuts += [("physical", float(mrad) * 1e-3, float(mrad) * 1e-3 / theta0) for mrad in a.theta_cut_mrad]
+        seen = set()
+        for cut_kind, cut, k in cuts:
+            key = round(float(cut), 14)
+            if key in seen:
+                continue
+            seen.add(key)
             q = model_at(cut)
             g = sample_moments(ang, cut, a.n_generated)
             if np.isfinite(g["theta_rms"]) and g["theta_rms"] > 0:
@@ -204,8 +211,10 @@ def main():
                     target=target_label,
                     p=a.p,
                     energy_loss=bool(a.energy_loss),
+                    cut_kind=cut_kind,
                     k=k,
                     theta_cut=cut,
+                    theta_cut_mrad=1000.0 * cut,
                     n_accept=g["n"],
                     exit_fraction=g["exit_fraction"],
                     Fc_g4=g["Fc"],
@@ -230,7 +239,8 @@ def main():
     print(d.to_string(index=False))
     print("\nCore-width comparison:\n", core.to_string(index=False))
     if len(files) >= 2:
-        pivot = d.pivot(index="k", columns="transport", values="theta_rms_g4")
+        dk = d[d.cut_kind == "reduced_k"]
+        pivot = dk.pivot(index="k", columns="transport", values="theta_rms_g4")
         cols = list(pivot.columns)
         if len(cols) >= 2:
             spread = (pivot[cols[0]] / pivot[cols[1]] - 1.0).rename("transport_spread_rms")

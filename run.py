@@ -11,6 +11,10 @@ from analysis import (
     analyze_events,
     analyze_gradient,
     ensemble_adaptive_summary,
+    ensemble_guard_gap_summary,
+    ensemble_weight_closure_summary,
+    ensemble_roi_split_summary,
+    ensemble_roi_spill_summary,
     ensemble_artifact_summary,
     paired_seed_summary,
     refresh_gradient_summary,
@@ -123,6 +127,16 @@ def main():
         adaptive_files = [f for f in adaptive_files if f.exists()]
         if adaptive_files:
             ensemble_adaptive_summary(adaptive_files, out.parent / "paired_adaptive_retention.csv")
+        for sibling, fn, target in (
+            ("roi_guard_gap_sensitivity.csv", ensemble_guard_gap_summary, "paired_roi_guard_gap.csv"),
+            ("weight_closure_by_momentum.csv", ensemble_weight_closure_summary, "paired_weight_closure.csv"),
+            ("roi_split_half_metrics.csv", ensemble_roi_split_summary, "paired_roi_split_half.csv"),
+            ("roi_spill.csv", ensemble_roi_spill_summary, "paired_roi_spill.csv"),
+        ):
+            files = [Path(f).with_name(sibling) for f in a.metrics]
+            files = [f for f in files if f.exists()]
+            if files:
+                fn(files, out.parent / target)
         print(summary.to_string(index=False))
         return
 

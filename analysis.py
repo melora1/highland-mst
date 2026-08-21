@@ -23,6 +23,7 @@ from config import (
     PB_ROI_R,
     PB_ROI_ZHALF,
     RADIAL_ETA_MAX,
+    ROI_GUARD_GAPS_CM,
     SPLIT_SEED,
     THETA_CUT,
     VOX_HALF,
@@ -116,6 +117,25 @@ def run_theory(outdir):
         )
     collapse = pd.DataFrame(rows)
     collapse.to_csv(out / "theory_collapse.csv", index=False)
+
+    # Fixed-path momentum-invariance summary.  R and B vary at the 1e-3 level
+    # individually but anticorrelate, leaving RB substantially more invariant.
+    rb = collapse["R"] * collapse["B"]
+    pd.DataFrame([dict(
+        R_mean=float(collapse["R"].mean()),
+        R_peak_to_peak_fraction=float((collapse["R"].max() - collapse["R"].min()) / collapse["R"].mean()),
+        B_mean=float(collapse["B"].mean()),
+        B_peak_to_peak_fraction=float((collapse["B"].max() - collapse["B"].min()) / collapse["B"].mean()),
+        RB_mean=float(rb.mean()),
+        RB_peak_to_peak_fraction=float((rb.max() - rb.min()) / rb.mean()),
+    )]).to_csv(out / "rb_invariance_summary.csv", index=False)
+
+    # Usable reduced-moment table for assessing the weak B dependence directly.
+    mu_rows = []
+    for B in (8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0):
+        for eta in (2.0, 3.0, 5.0, 7.5, 10.0, 15.0, 20.0, 30.0):
+            mu_rows.append(dict(B=B, eta_cut=eta, mu2=mu2_eta(eta, B, nmax=2)))
+    pd.DataFrame(mu_rows).to_csv(out / "mu2_grid.csv", index=False)
 
     # p(X) energy-loss table.  Two explicit screening-log continuations are
     # carried so their finite-loss spread is a visible model systematic rather
@@ -387,17 +407,26 @@ def build_weights(df, cache=None):
     ), cache
 
 
-def roi_masks():
+def roi_masks(guard_gap_cm=0.0):
+    """Return Pb and Cu comparison masks with an optional guard gap around Pb.
+
+    The Pb ROI is unchanged.  The Cu ROI excludes all voxels whose centers lie
+    within ``PB_ROI_R + guard_gap_cm`` of the Pb axis.  This permits a direct
+    sensitivity check for PoCA spill between the contiguous nominal ROIs.
+    """
+    guard_gap_cm = float(guard_gap_cm)
+    if guard_gap_cm < 0:
+        raise ValueError("guard_gap_cm must be non-negative")
     X, Y, Z = np.meshgrid(CENTERS, CENTERS, CENTERS, indexing="ij")
-    pb = ((X - PB_CX) ** 2 + (Y - PB_CY) ** 2 <= PB_ROI_R**2) & (
-        np.abs(Z) <= PB_ROI_ZHALF
-    )
-    cu = (X**2 + Y**2 <= CU_ROI_R**2) & (np.abs(Z) <= CU_ROI_ZHALF) & ~pb
+    pb_r2 = (X - PB_CX) ** 2 + (Y - PB_CY) ** 2
+    pb = (pb_r2 <= PB_ROI_R**2) & (np.abs(Z) <= PB_ROI_ZHALF)
+    cu = (X**2 + Y**2 <= CU_ROI_R**2) & (np.abs(Z) <= CU_ROI_ZHALF)
+    cu &= pb_r2 > (PB_ROI_R + guard_gap_cm) ** 2
     return pb, cu
 
 
-def image_metrics(img, counts):
-    pb, cu = roi_masks()
+def image_metrics(img, counts, guard_gap_cm=0.0):
+    pb, cu = roi_masks(guard_gap_cm=guard_gap_cm)
     valid = valid_voxel_mask(counts, img)
     pb &= valid
     cu &= valid
@@ -405,14 +434,200 @@ def image_metrics(img, counts):
     a = a[np.isfinite(a)]
     b = b[np.isfinite(b)]
     if a.size < 2 or b.size < 2:
-        return dict(SNR_Pb=np.nan, CNR=np.nan, n_pb=len(a), n_cu=len(b))
+        return dict(
+            SNR_Pb=np.nan,
+            CNR=np.nan,
+            mean_Pb=np.nan,
+            mean_Cu=np.nan,
+            sd_Pb=np.nan,
+            sd_Cu=np.nan,
+            n_pb=len(a),
+            n_cu=len(b),
+            guard_gap_cm=float(guard_gap_cm),
+        )
     return dict(
         SNR_Pb=float(a.mean() / a.std(ddof=1)),
         CNR=float((a.mean() - b.mean()) / b.std(ddof=1)),
+        mean_Pb=float(a.mean()),
+        mean_Cu=float(b.mean()),
+        sd_Pb=float(a.std(ddof=1)),
+        sd_Cu=float(b.std(ddof=1)),
         n_pb=len(a),
         n_cu=len(b),
+        guard_gap_cm=float(guard_gap_cm),
     )
 
+
+def guard_gap_sensitivity(images, counts, gaps=ROI_GUARD_GAPS_CM):
+    """ROI-metric sensitivity to a finite gap between Pb and Cu comparison ROIs."""
+    rows = []
+    for gap in gaps:
+        for name, img in images.items():
+            if name not in ("I_nom", "I_p", "I_Q", "I_ideal", "I_const", "I_scale_opt"):
+                continue
+            rows.append(dict(image=name, **image_metrics(img, counts, guard_gap_cm=gap)))
+    return pd.DataFrame(rows)
+
+
+def _event_roi_masks(df, guard_gap_cm=0.0):
+    """Event-level reconstructed Pb/Cu ROI masks for PoCA spill diagnostics."""
+    x = df.poca_x.to_numpy(float)
+    y = df.poca_y.to_numpy(float)
+    z = df.poca_z.to_numpy(float)
+    pb_r2 = (x - PB_CX) ** 2 + (y - PB_CY) ** 2
+    pb = (pb_r2 <= PB_ROI_R**2) & (np.abs(z) <= PB_ROI_ZHALF)
+    cu = (x * x + y * y <= CU_ROI_R**2) & (np.abs(z) <= CU_ROI_ZHALF)
+    cu &= pb_r2 > (PB_ROI_R + float(guard_gap_cm)) ** 2
+    return pb, cu
+
+
+def roi_spill_diagnostics(df, gaps=ROI_GUARD_GAPS_CM):
+    """Truth-class migration into the reconstructed Pb/Cu ROIs."""
+    rows = []
+    truth_groups = {
+        "Pb-crossing": df.true_pb.to_numpy(bool),
+        "Cu-only": df.true_cu_only.to_numpy(bool),
+        "Al-only": df.true_al_only.to_numpy(bool),
+    }
+    for gap in gaps:
+        pb, cu = _event_roi_masks(df, guard_gap_cm=gap)
+        for truth_name, mask in truth_groups.items():
+            n = int(mask.sum())
+            rows.append(
+                dict(
+                    guard_gap_cm=float(gap),
+                    truth_group=truth_name,
+                    n_events=n,
+                    frac_in_pb_roi=float(np.mean(pb[mask])) if n else np.nan,
+                    frac_in_cu_roi=float(np.mean(cu[mask])) if n else np.nan,
+                    frac_in_neither=float(np.mean((~pb & ~cu)[mask])) if n else np.nan,
+                )
+            )
+    return pd.DataFrame(rows)
+
+
+def response_closure_by_momentum(df, weights, cache, generated=None):
+    """Per-setting closure and detector-response decomposition on accepted events.
+
+    All rows use the same reconstructed-cut-selected event sample so differences
+    isolate numerator/path/momentum substitutions rather than acceptance changes.
+    """
+    p_true = df.p_true.to_numpy(float)
+    p_meas = df.p_meas.to_numpy(float)
+    d_true = df.dth_true.to_numpy(float)
+    d_reco = df.dth_reco.to_numpy(float)
+    seg_true = segment_matrix(df, "ref_true")
+    seg_reco = segment_matrix(df, "ref_reco")
+
+    q_true = cache.arrays(p_true, seg_true, THETA_CUT)["theta_rms"]
+    q_reco_truep = cache.arrays(p_true, seg_reco, THETA_CUT)["theta_rms"]
+    q_true_measp = cache.arrays(p_meas, seg_true, THETA_CUT)["theta_rms"]
+
+    def sq(num, den):
+        return np.divide(num, den, out=np.zeros_like(num), where=den > 0) ** 2
+
+    variants = {
+        "w_ideal_trueangle_truep_truepath": sq(d_true, q_true),
+        "w_angle_only_recoangle_truep_truepath": sq(d_reco, q_true),
+        "w_path_only_trueangle_truep_recopath": sq(d_true, q_reco_truep),
+        "w_momentum_only_trueangle_measp_truepath": sq(d_true, q_true_measp),
+        "w_angle_path_recoangle_truep_recopath": sq(d_reco, q_reco_truep),
+        "w_angle_momentum_recoangle_measp_truepath": sq(d_reco, q_true_measp),
+        "w_Q_full": np.asarray(weights["I_Q"], float),
+        "w_nom": np.asarray(weights["I_nom"], float),
+        "w_p": np.asarray(weights["I_p"], float),
+    }
+
+    rows = []
+    pset = df.p_set.to_numpy(float)
+    for p0 in sorted(np.unique(pset)):
+        m = np.isclose(pset, p0)
+        n_generated = int(np.sum(np.isclose(generated.p_set.to_numpy(float), p0))) if generated is not None else int(m.sum())
+        row = dict(
+            p_set=float(p0),
+            n_generated=n_generated,
+            n_accepted=int(m.sum()),
+            acceptance_fraction=float(m.sum() / n_generated) if n_generated else np.nan,
+            mean_p_true=float(np.mean(p_true[m])),
+            mean_p_meas=float(np.mean(p_meas[m])),
+            mean_p_ratio=float(np.mean(p_meas[m] / p_true[m])),
+            mean_p2_ratio=float(np.mean((p_meas[m] / p_true[m]) ** 2)),
+            sd_fractional_p_error=float(np.std(p_meas[m] / p_true[m] - 1.0, ddof=1)),
+            mean_true_angle_mrad=1000.0 * float(np.mean(d_true[m])),
+            mean_reco_angle_mrad=1000.0 * float(np.mean(d_reco[m])),
+        )
+        for key, arr in variants.items():
+            row[f"mean_{key}"] = float(np.mean(arr[m]))
+        ideal = row["mean_w_ideal_trueangle_truep_truepath"]
+        for key in variants:
+            row[f"delta_{key}_minus_ideal"] = row[f"mean_{key}"] - ideal
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def roi_split_half_diagnostics(df, weights, seed=SPLIT_SEED):
+    """Split-half stability of ROI means and descriptive SNR/CNR metrics.
+
+    The single-split quantity |m0-m1|/2 is an empirical full-sample noise-scale
+    estimate for a scalar metric under equal independent halves; it is a
+    diagnostic, not a formal confidence interval.  Paired estimator differences
+    are evaluated on the same half assignment.
+    """
+    rng = np.random.default_rng(int(seed))
+    half = rng.integers(0, 2, size=len(df), dtype=np.int8)
+    image_names = ("I_nom", "I_p", "I_Q", "I_ideal", "I_const")
+    rows = []
+    full_metrics = {}
+    half_metrics = {0: {}, 1: {}}
+
+    for name in image_names:
+        full_img, full_count = image_from_events(df, weights[name])
+        fm = image_metrics(full_img, full_count)
+        full_metrics[name] = fm
+        for h in (0, 1):
+            m = half == h
+            img, count = image_from_events(df.loc[m], np.asarray(weights[name])[m])
+            half_metrics[h][name] = image_metrics(img, count)
+        h0, h1 = half_metrics[0][name], half_metrics[1][name]
+        rows.append(
+            dict(
+                kind="image",
+                comparison=name,
+                SNR_full=fm["SNR_Pb"],
+                SNR_half0=h0["SNR_Pb"],
+                SNR_half1=h1["SNR_Pb"],
+                SNR_noise_full_est=0.5 * abs(h0["SNR_Pb"] - h1["SNR_Pb"]),
+                CNR_full=fm["CNR"],
+                CNR_half0=h0["CNR"],
+                CNR_half1=h1["CNR"],
+                CNR_noise_full_est=0.5 * abs(h0["CNR"] - h1["CNR"]),
+                split_seed=int(seed),
+            )
+        )
+
+    for a, b in (("I_nom", "I_Q"), ("I_p", "I_Q")):
+        full_dsnr = full_metrics[a]["SNR_Pb"] - full_metrics[b]["SNR_Pb"]
+        full_dcnr = full_metrics[a]["CNR"] - full_metrics[b]["CNR"]
+        dsnr0 = half_metrics[0][a]["SNR_Pb"] - half_metrics[0][b]["SNR_Pb"]
+        dsnr1 = half_metrics[1][a]["SNR_Pb"] - half_metrics[1][b]["SNR_Pb"]
+        dcnr0 = half_metrics[0][a]["CNR"] - half_metrics[0][b]["CNR"]
+        dcnr1 = half_metrics[1][a]["CNR"] - half_metrics[1][b]["CNR"]
+        rows.append(
+            dict(
+                kind="paired_difference",
+                comparison=f"{a}-{b}",
+                SNR_full=full_dsnr,
+                SNR_half0=dsnr0,
+                SNR_half1=dsnr1,
+                SNR_noise_full_est=0.5 * abs(dsnr0 - dsnr1),
+                CNR_full=full_dcnr,
+                CNR_half0=dcnr0,
+                CNR_half1=dcnr1,
+                CNR_noise_full_est=0.5 * abs(dcnr0 - dcnr1),
+                split_seed=int(seed),
+            )
+        )
+    return pd.DataFrame(rows)
 
 def _reference_class_masks(df, prefix):
     """Return Al-only and Cu-bearing masks for a stored reference-path trace."""
@@ -665,6 +880,16 @@ def analyze_events(df, outdir, cache=None):
     )
     path_class_migration(use).to_csv(out / "path_class_migration.csv", index=False)
     adaptive_retention(df).to_csv(out / "adaptive_retention.csv", index=False)
+    guard_gap_sensitivity(images, counts).to_csv(
+        out / "roi_guard_gap_sensitivity.csv", index=False
+    )
+    roi_spill_diagnostics(use).to_csv(out / "roi_spill.csv", index=False)
+    response_closure_by_momentum(use, weights, cache, generated=df).to_csv(
+        out / "weight_closure_by_momentum.csv", index=False
+    )
+    roi_split_half_diagnostics(use, weights).to_csv(
+        out / "roi_split_half_metrics.csv", index=False
+    )
 
     valid = valid_scale
     A = images["I_nom"] - images["I_Q"]
@@ -810,6 +1035,10 @@ def refresh_image_summaries(outdir):
         image_only_refresh=True,
     )
     pd.DataFrame([row]).to_csv(out / "artifact_summary.csv", index=False)
+    images_for_roi = {k: v for k, v in data.items() if k.startswith("I_")}
+    guard_gap_sensitivity(images_for_roi, counts).to_csv(
+        out / "roi_guard_gap_sensitivity.csv", index=False
+    )
     return row
 
 
@@ -889,6 +1118,66 @@ def refresh_gradient_summary(outdir):
     d.to_csv(out / "gradient_summary.csv", index=False)
     return d
 
+
+
+def _ensemble_grouped_csv(files, group_cols, value_cols, out_csv=None):
+    """Combine matched-seed diagnostic CSVs into mean/SD summaries."""
+    frames = []
+    for seed, f in enumerate(files):
+        d = pd.read_csv(f).copy()
+        d["seed"] = seed
+        d["source"] = str(f)
+        frames.append(d)
+    raw = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if raw.empty:
+        return raw
+    agg = {}
+    for col in value_cols:
+        if col in raw.columns:
+            agg[f"{col}_mean"] = (col, "mean")
+            agg[f"{col}_sd"] = (col, "std")
+    summary = raw.groupby(group_cols, as_index=False).agg(**agg, n_seeds=("seed", "nunique"))
+    if out_csv is not None:
+        out_csv = Path(out_csv)
+        summary.to_csv(out_csv, index=False)
+        raw.to_csv(out_csv.with_name(out_csv.stem + "_raw.csv"), index=False)
+    return summary
+
+
+def ensemble_guard_gap_summary(files, out_csv=None):
+    return _ensemble_grouped_csv(
+        files, ["image", "guard_gap_cm"],
+        ["SNR_Pb", "CNR", "mean_Pb", "mean_Cu", "sd_Pb", "sd_Cu", "n_pb", "n_cu"],
+        out_csv,
+    )
+
+
+def ensemble_weight_closure_summary(files, out_csv=None):
+    cols = [
+        "acceptance_fraction", "mean_p_ratio", "mean_p2_ratio", "sd_fractional_p_error",
+        "mean_w_ideal_trueangle_truep_truepath", "mean_w_angle_only_recoangle_truep_truepath",
+        "mean_w_path_only_trueangle_truep_recopath", "mean_w_momentum_only_trueangle_measp_truepath",
+        "mean_w_Q_full", "mean_w_nom", "mean_w_p",
+        "delta_w_angle_only_recoangle_truep_truepath_minus_ideal",
+        "delta_w_path_only_trueangle_truep_recopath_minus_ideal",
+        "delta_w_momentum_only_trueangle_measp_truepath_minus_ideal",
+        "delta_w_Q_full_minus_ideal",
+    ]
+    return _ensemble_grouped_csv(files, ["p_set"], cols, out_csv)
+
+
+def ensemble_roi_split_summary(files, out_csv=None):
+    return _ensemble_grouped_csv(
+        files, ["kind", "comparison"],
+        ["SNR_full", "SNR_noise_full_est", "CNR_full", "CNR_noise_full_est"], out_csv,
+    )
+
+
+def ensemble_roi_spill_summary(files, out_csv=None):
+    return _ensemble_grouped_csv(
+        files, ["guard_gap_cm", "truth_group"],
+        ["frac_in_pb_roi", "frac_in_cu_roi", "frac_in_neither"], out_csv,
+    )
 
 def paired_seed_summary(metric_files, out_csv=None):
     """Paired seed differences plus absolute metric means for each comparison."""

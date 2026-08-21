@@ -363,6 +363,19 @@ def plot_theory(outdir: str | Path, figdir: Path | None = None):
 # Detector-level difference maps and summaries
 
 
+    mu_path = out / "mu2_grid.csv"
+    if mu_path.exists():
+        mu = pd.read_csv(mu_path)
+        fig, ax = plt.subplots(figsize=(5.6, 3.3))
+        for B, g in mu.groupby("B"):
+            ax.plot(g.eta_cut, g.mu2, marker="o", ms=2.5, label=rf"$B={B:g}$")
+        ax.set_xscale("log")
+        ax.set_xlabel(r"reduced cut $\eta_{\rm cut}$")
+        ax.set_ylabel(r"$\mu_2(\eta_{\rm cut};B)$")
+        ax.legend(ncol=2, frameon=False)
+        fig.tight_layout()
+        _save(fig, out, "mu2_B_dependence", figdir)
+
 def plot_images(
     outdir: str | Path,
     figdir: Path | None = None,
@@ -492,7 +505,8 @@ def plot_artifact_ensemble(csv_path: Path, figdir: Path | None = None):
     bars = ax.bar(x, vals, yerr=errs, capsize=3)
     ax.bar_label(bars, labels=[f"{v:.4f}" for v in vals], padding=3, fontsize=8)
     ax.set_xticks(x, labels)
-    ax.set_yscale("log")
+    if np.all(np.isfinite(vals)) and np.all(np.asarray(vals) > 0):
+        ax.set_yscale("log")
     ax.set_ylabel("fiducial image RMS difference")
     c = d.loc["c_opt", "mean"] if "c_opt" in d.index else np.nan
     post = d.loc["post_scalar_p_reduction", "mean"] if "post_scalar_p_reduction" in d.index else np.nan
@@ -523,6 +537,81 @@ def plot_adaptive_ensemble(csv_path: Path, figdir: Path | None = None):
     axes[0].set_ylabel("adaptive-cut retention (%)")
     fig.tight_layout()
     _save(fig, source, "retention_ensemble", figdir)
+
+
+def plot_guard_gap_ensemble(csv_path: Path, figdir: Path | None = None):
+    if not csv_path.exists():
+        return
+    d = pd.read_csv(csv_path)
+    d = d[d.image.isin(["I_nom", "I_p", "I_Q"])].copy()
+    d = d[np.isfinite(d.CNR_mean)] if "CNR_mean" in d else d.iloc[0:0]
+    if d.empty:
+        return
+    source = csv_path.parent / "roi_guard"
+    figdir = _figdir(csv_path.parent) if figdir is None else figdir
+    fig, ax = plt.subplots(figsize=(5.8, 3.3))
+    for name, g in d.groupby("image"):
+        ax.errorbar(g.guard_gap_cm, g.CNR_mean, yerr=g.CNR_sd, marker="o", capsize=3, label=name)
+    ax.set_xlabel("Pb--Cu guard gap (cm)")
+    ax.set_ylabel("descriptive CNR")
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    _save(fig, source, "sensitivity", figdir)
+
+
+def plot_weight_closure_ensemble(csv_path: Path, figdir: Path | None = None):
+    if not csv_path.exists():
+        return
+    d = pd.read_csv(csv_path)
+    if d.empty:
+        return
+    source = csv_path.parent / "response"
+    figdir = _figdir(csv_path.parent) if figdir is None else figdir
+    fig, ax = plt.subplots(figsize=(6.1, 3.4))
+    for col, label in (
+        ("mean_w_ideal_trueangle_truep_truepath_mean", r"ideal"),
+        ("mean_w_Q_full_mean", r"$w_Q$ full reco"),
+        ("mean_w_p_mean", r"$w_p$"),
+        ("mean_w_nom_mean", r"$w_{\rm nom}$"),
+    ):
+        if col in d:
+            sdcol = col[:-5] + "_sd"
+            m = np.isfinite(d[col])
+            if np.any(m):
+                yerr = d.loc[m, sdcol] if sdcol in d else None
+                ax.errorbar(d.loc[m, "p_set"], d.loc[m, col], yerr=yerr, marker="o", capsize=3, label=label)
+    ax.axhline(1.0, lw=0.8)
+    ax.set_xlabel(r"nominal momentum (GeV/$c$)")
+    ax.set_ylabel("mean accepted event weight")
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    _save(fig, source, "weight_closure", figdir)
+
+
+def plot_roi_split_ensemble(csv_path: Path, figdir: Path | None = None):
+    if not csv_path.exists():
+        return
+    d = pd.read_csv(csv_path)
+    d = d[d.kind == "paired_difference"].copy()
+    if d.empty or not np.any(np.isfinite(d.SNR_full_mean)) or not np.any(np.isfinite(d.CNR_full_mean)):
+        return
+    source = csv_path.parent / "roi_split"
+    figdir = _figdir(csv_path.parent) if figdir is None else figdir
+    fig, axes = plt.subplots(1, 2, figsize=(7.0, 3.0))
+    x = np.arange(len(d))
+    labels = d.comparison.tolist()
+    axes[0].bar(x, d.SNR_full_mean, yerr=d.SNR_full_sd, capsize=3)
+    axes[0].plot(x, d.SNR_noise_full_est_mean, "o", label="split-half noise scale")
+    axes[0].set_xticks(x, labels, rotation=12)
+    axes[0].set_ylabel(r"paired $\Delta$SNR")
+    axes[0].legend(frameon=False, fontsize=7)
+    axes[1].bar(x, d.CNR_full_mean, yerr=d.CNR_full_sd, capsize=3)
+    axes[1].plot(x, d.CNR_noise_full_est_mean, "o", label="split-half noise scale")
+    axes[1].set_xticks(x, labels, rotation=12)
+    axes[1].set_ylabel(r"paired $\Delta$CNR")
+    axes[1].legend(frameon=False, fontsize=7)
+    fig.tight_layout()
+    _save(fig, source, "paired_noise", figdir)
 
 
 # ---------------------------------------------------------------------------
@@ -661,6 +750,15 @@ def run_all(
     adaptive_ensemble = root / "paired_adaptive_retention.csv"
     if adaptive_ensemble.exists():
         plot_adaptive_ensemble(adaptive_ensemble, figdir)
+    guard_ensemble = root / "paired_roi_guard_gap.csv"
+    if guard_ensemble.exists():
+        plot_guard_gap_ensemble(guard_ensemble, figdir)
+    closure_ensemble = root / "paired_weight_closure.csv"
+    if closure_ensemble.exists():
+        plot_weight_closure_ensemble(closure_ensemble, figdir)
+    roi_split_ensemble = root / "paired_roi_split_half.csv"
+    if roi_split_ensemble.exists():
+        plot_roi_split_ensemble(roi_split_ensemble, figdir)
 
     print(f"figures written to {figdir}")
     print(f"theory sources:   {len(theory_dirs)}")

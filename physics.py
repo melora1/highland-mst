@@ -16,7 +16,10 @@ This module deliberately separates three levels of statement:
 
 The radial n<=2 Moliere series is an asymptotic truncation.  Small negative
 regions are clipped only for probability sampling/moments and the clipped mass
-is reported so this regularisation is never silent.
+is reported so this regularisation is never silent.  Above the numerical radial
+table, the continuation used here is the point-nucleus Rutherford/Moliere
+asymptote.  It deliberately does NOT include a finite nuclear form factor;
+absolute large-angle predictions therefore require transport/data validation.
 """
 
 from __future__ import annotations
@@ -242,6 +245,8 @@ def phi0(eta):
 def phi1(eta):
     e = np.abs(np.asarray(eta, dtype=float))
     direct = np.interp(e, _RADIAL_TABLE_GRID, _PHI1)
+    # Point-nucleus asymptotic continuation.  Do not interpret this as a
+    # finite-nuclear-size prediction at arbitrarily large momentum transfer.
     tail = 2.0 / np.maximum(e, 1e-15) ** 4
     return np.where(e > RADIAL_ETA_MAX, tail, direct)
 
@@ -329,7 +334,7 @@ def radial_moments(chi_c2: float, B: float, theta_cut: float, nmax: int = 2):
 
 
 def radial_tail_ratio(theta: float, chi_c2: float, B: float, nmax: int = 2):
-    """h(theta)*theta^3/(2 chi_c^2); tends to 1 in Rutherford regime."""
+    """Internal point-nucleus tail check h*theta^3/(2 chi_c^2) -> 1."""
     if theta <= 0 or chi_c2 <= 0:
         return np.nan
     s = math.sqrt(chi_c2 * B)

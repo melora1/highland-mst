@@ -12,7 +12,7 @@ import math
 import sys
 import numpy as np
 
-from analysis import CENTERS, PATHS, fiducial_voxel_mask, optimal_global_scale
+from analysis import CENTERS, PATHS, fiducial_voxel_mask, optimal_global_scale, roi_masks
 from config import AL_HALF, MATERIALS, MOMENTA, RADIAL_ETA_MAX, THETA_CUT, VOX_SIZE
 from geometry import trace_paths
 from physics import (
@@ -99,6 +99,8 @@ def R_B_nearly_momentum_invariant():
     R = np.array([r["R"] for r in rs])
     assert np.ptp(B) / B.mean() < 0.002, B
     assert np.ptp(R) / R.mean() < 0.002, R
+    RB = R * B
+    assert np.ptp(RB) / RB.mean() < 3e-4, RB
 
 
 @test
@@ -328,6 +330,18 @@ def global_scale_optimizer_matches_closed_form():
     # The derivative of ||a*x-y||^2 vanishes at the optimum.
     assert abs(float(np.sum(x * (a * x - y)))) < 1e-13
 
+
+
+@test
+def roi_guard_gap_is_disjoint_and_shrinks_cu_region():
+    pb0, cu0 = roi_masks(0.0)
+    pb1, cu1 = roi_masks(0.6)
+    pb2, cu2 = roi_masks(1.2)
+    assert np.array_equal(pb0, pb1) and np.array_equal(pb1, pb2)
+    assert not np.any(pb0 & cu0)
+    assert not np.any(pb1 & cu1)
+    assert not np.any(pb2 & cu2)
+    assert cu0.sum() > cu1.sum() > cu2.sum() > 0
 
 def main():
     bad = 0
