@@ -90,10 +90,10 @@ CU_ROI_ZHALF = 7.5
 ROI_GUARD_GAPS_CM = (0.0, 0.6, 1.2)
 
 # Numerical controls
-P_CACHE_STEP = 0.010  # GeV/c
+P_CACHE_STEP = 0.010  # GeV/c; disclosed detector-simulation cache discretization
 X_CACHE_STEP = 0.25  # g cm^-2
-SEG_CACHE_STEP = 0.25  # g cm^-2, ordered-segment cache
-CUT_CACHE_STEP = 0.002  # rad
+SEG_CACHE_STEP = 0.25  # g cm^-2; exact ordered segments are cached on this grid
+CUT_CACHE_STEP = 0.002  # rad; angular-cut cache grid
 P_BETA_SLICE_TOL = 0.01
 RADIAL_ETA_MAX = 30.0
 RADIAL_TABLE_ETA_MAX = 30.0

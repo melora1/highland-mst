@@ -5,13 +5,13 @@
 // ../geant4_compare.py.
 //
 // Usage:
-//   ./mstSim <urban|wentzel|wvi_ss> <Cu|Pb> <thickness_cm> <p_GeV>
+//   ./mstSim <ftfp_bert|ftfp_bert_wvi|wvi_ss> <Cu|Pb> <thickness_cm> <p_GeV>
 //            <nEvents> <seed> <outFile>
 //
 // Example:
-//   ./mstSim urban Cu 15.0 1.0 1000000 12345 out/Cu_t15_p1_urban_s12345.txt
+//   ./mstSim ftfp_bert Cu 15.0 1.0 1000000 12345 out/Cu_t15_p1_ftfp_bert_s12345.txt
 //   python3 ../geant4_compare.py \
-//       --file urban=out/Cu_t15_p1_urban_s12345.txt \
+//       --file ftfp_bert=out/Cu_t15_p1_ftfp_bert_s12345.txt \
 //       --material Cu --thickness-cm 15.0 --p 1.0 --n-generated 1000000 \
 //       --out out/Cu_t15_p1_compare.csv
 
@@ -68,7 +68,7 @@ void PrintMuonProcesses() {
 int main(int argc, char** argv) {
   if (argc != 8) {
     std::cerr << "Usage: " << argv[0]
-              << " <urban|wentzel|wvi_ss> <Cu|Pb> <thickness_cm> <p_GeV> "
+              << " <ftfp_bert|ftfp_bert_wvi|wvi_ss> <Cu|Pb> <thickness_cm> <p_GeV> "
                  "<nEvents> <seed> <outFile>\n";
     return 1;
   }

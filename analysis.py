@@ -372,16 +372,25 @@ def build_weights(df, cache=None):
     # Two means are reported because the published 12.18% used a weighted
     # average, whereas an unweighted event-count mean is the cleaner scale-null
     # control.  I_const deliberately uses the event-count mean.
-    eps_event = (
-        np.divide(
-            q_reco["theta_rms"],
-            tspace_incident,
-            out=np.zeros_like(dth),
-            where=tspace_incident > 0,
-        )
-        - 1.0
+    # A mismatch is defined only when the reconstructed reference path has a
+    # nonzero Highland and accepted-RMS denominator.  Do not let NumPy's divide
+    # fallback turn an empty reference path into epsilon=-1 and contaminate the
+    # event-count scalar control.
+    valid_reference = (
+        np.isfinite(tspace_incident)
+        & np.isfinite(q_reco["theta_rms"])
+        & (tspace_incident > 0)
+        & (q_reco["theta_rms"] > 0)
     )
-    finite = np.isfinite(eps_event)
+    ratio_event = np.full_like(dth, np.nan)
+    np.divide(
+        q_reco["theta_rms"],
+        tspace_incident,
+        out=ratio_event,
+        where=valid_reference,
+    )
+    eps_event = ratio_event - 1.0
+    finite = valid_reference & np.isfinite(eps_event)
     eps_bar_event = float(np.mean(eps_event[finite]))
     pos = finite & np.isfinite(w_nom) & (w_nom > 0)
     eps_bar_weighted = (
@@ -399,6 +408,7 @@ def build_weights(df, cache=None):
         I_ideal=w_ideal,
         I_const=w_const,
         eps_event=eps_event,
+        valid_reference=valid_reference,
         eps_p=eps_p,
         eps_bar_event_mean=eps_bar_event,
         eps_bar_nominal_weighted=eps_bar_weighted,
@@ -948,8 +958,14 @@ def analyze_gradient(df, outdir, cache=None):
 
     # Mechanism predictor: the local mean normalization factor alone.  This is
     # intentionally *not* an algebraic identity because it omits eventwise w_Q.
-    excess = (1.0 + weights["eps_event"]) ** 2 - 1.0
-    predicted_unweighted, _ = image_from_events(use, excess)
+    valid_reference = np.asarray(weights["valid_reference"], bool)
+    excess = np.zeros(len(use), float)
+    excess[valid_reference] = (
+        (1.0 + weights["eps_event"][valid_reference]) ** 2 - 1.0
+    )
+    predicted_unweighted, _ = image_from_events(
+        use.loc[valid_reference], excess[valid_reference]
+    )
 
     # Algebraic closure predictor.  Since w_nom-w_Q = w_Q*((1+eps)^2-1) for
     # the same event, this should reproduce the observed map up to roundoff and
@@ -1049,8 +1065,8 @@ def ensemble_artifact_summary(artifact_files, out_csv=None):
         rows.append(dict(seed=seed, source=str(f), **d.to_dict()))
     raw = pd.DataFrame(rows)
     cols = [
-        "artifact_rms", "scale_opt_residual_rms", "p_residual_rms",
-        "scale_opt_reduction", "p_reduction", "post_scalar_p_reduction", "c_opt"
+        "artifact_rms", "const_residual_rms", "scale_opt_residual_rms", "p_residual_rms",
+        "const_reduction", "scale_opt_reduction", "p_reduction", "post_scalar_p_reduction", "c_opt"
     ]
     summary_rows = []
     for col in cols:

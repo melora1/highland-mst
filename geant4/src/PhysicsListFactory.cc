@@ -67,16 +67,16 @@ G4VUserPhysicsList* BuildPhysicsList(const G4String& modelIn) {
   const bool enableMuSingleScatter = (model == "wvi_ss");
 
   G4String listName;
-  if (model == "urban") {
-    listName = "FTFP_BERT";       // default MSC = Urban
-  } else if (model == "wentzel") {
-    listName = "FTFP_BERT_WVI";   // MSC = Wentzel-VI (reference default)
+  if (model == "ftfp_bert") {
+    listName = "FTFP_BERT";       // unmodified reference list
+  } else if (model == "ftfp_bert_wvi") {
+    listName = "FTFP_BERT_WVI";   // unmodified WVI reference list
   } else if (model == "wvi_ss") {
     listName = "FTFP_BERT_WVI";   // base list; muon single scattering added below
   } else {
     G4Exception("BuildPhysicsList", "BadModel", FatalException,
                ("Unknown MSC model '" + model +
-                "'; expected 'urban', 'wentzel', or 'wvi_ss'").c_str());
+                "'; expected 'ftfp_bert', 'ftfp_bert_wvi', or 'wvi_ss'").c_str());
   }
 
   G4PhysListFactory factory;

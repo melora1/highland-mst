@@ -11,8 +11,9 @@ from __future__ import annotations
 import math
 import sys
 import numpy as np
+import pandas as pd
 
-from analysis import CENTERS, PATHS, fiducial_voxel_mask, optimal_global_scale, roi_masks
+from analysis import CENTERS, PATHS, build_weights, fiducial_voxel_mask, optimal_global_scale, roi_masks
 from config import AL_HALF, MATERIALS, MOMENTA, RADIAL_ETA_MAX, THETA_CUT, VOX_SIZE
 from geometry import trace_paths
 from physics import (
@@ -329,6 +330,39 @@ def global_scale_optimizer_matches_closed_form():
     a = 1.0 / c
     # The derivative of ||a*x-y||^2 vanishes at the optimum.
     assert abs(float(np.sum(x * (a * x - y)))) < 1e-13
+
+
+@test
+def event_mean_scalar_excludes_empty_reference_paths():
+    data = {
+        "p_meas": [1.0, 1.0],
+        "p_true": [1.0, 1.0],
+        "dth_reco": [0.01, 0.01],
+        "dth_true": [0.01, 0.01],
+        "xx0_ref_reco": [1.0, 0.0],
+    }
+    names = ("al_up", "cu_up", "pb", "cu_down", "al_down")
+    for prefix in ("ref_reco", "ref_true"):
+        for name in names:
+            data[f"{prefix}_{name}"] = [1.0 if name == "al_up" else 0.0, 0.0]
+    df = pd.DataFrame(data)
+
+    class FakeCache:
+        def arrays(self, p, segments, cut):
+            p = np.asarray(p, float)
+            hit = np.sum(np.asarray(segments, float), axis=1) > 0
+            return {
+                "theta_rms": np.where(hit, 0.02, 0.0),
+                "epsilon_matched": np.where(hit, 0.1, 0.0),
+                "epsilon_mixed": np.where(hit, 0.2, 0.0),
+                "p_out": p,
+            }
+
+    weights, _ = build_weights(df, cache=FakeCache())
+    assert np.array_equal(weights["valid_reference"], [True, False])
+    assert np.isfinite(weights["eps_event"][0])
+    assert np.isnan(weights["eps_event"][1])
+    assert weights["eps_bar_event_mean"] == weights["eps_event"][0]
 
 
 

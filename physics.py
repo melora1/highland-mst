@@ -767,7 +767,13 @@ def layers_from_segment_thicknesses(seg):
 
 
 class PofxCache:
-    """Cache p(X) calibration on incident-p and ordered areal-density bins."""
+    """Cache p(X) calibration on incident-p and ordered areal-density bins.
+
+    Ray intersections and segment order remain analytic, but the expensive
+    scattering calculation uses the discretization declared in ``config.py``:
+    incident momentum is rounded to ``P_CACHE_STEP``, each ordered segment's
+    areal density to ``SEG_CACHE_STEP``, and the cut to ``CUT_CACHE_STEP``.
+    """
 
     def __init__(
         self,

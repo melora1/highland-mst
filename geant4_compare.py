@@ -131,7 +131,7 @@ def band_decomposition(angles, model_at, theta0, bands, n_generated=None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--file", action="append", required=True, help="label=angles.txt; repeat for Urban/Wentzel/etc.")
+    ap.add_argument("--file", action="append", required=True, help="label=angles.txt; repeat for each reference-list/configuration label")
     target = ap.add_mutually_exclusive_group()
     target.add_argument("--path", choices=["AlCu", "Al25"], default=None)
     target.add_argument("--material", choices=["Cu", "Pb", "Al"], default=None)

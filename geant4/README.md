@@ -35,13 +35,13 @@ cmake --build build -j
 ## Run one simulation
 
 ```bash
-./build/mstSim urban Cu 15.0 1.0 10000 12345 out.txt
+./build/mstSim ftfp_bert Cu 15.0 1.0 10000 12345 out.txt
 ```
 
 Arguments:
 
 ```text
-./mstSim <urban|wentzel|wvi_ss> <Cu|Pb> <thickness_cm> <p_GeV> <nEvents> <seed> <outFile>
+./mstSim <ftfp_bert|ftfp_bert_wvi|wvi_ss> <Cu|Pb> <thickness_cm> <p_GeV> <nEvents> <seed> <outFile>
 ```
 
 The output is one primary exit polar angle per line, in radians.
@@ -54,4 +54,4 @@ The supplied `run_benchmark_suite.sh` expects `EXE=./mstSim` by default and call
 EXE=./build/mstSim N_EVENTS=10000 ./run_benchmark_suite.sh
 ```
 
-The comparison stage still requires `../geant4_compare.py`. That Python program was not among the supplied files, so it cannot be reconstructed exactly from the Geant4 source alone.
+The comparison stage uses the supplied `../geant4_compare.py`.

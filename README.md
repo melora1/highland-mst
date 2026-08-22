@@ -1,10 +1,10 @@
 # Highland-MST revision codebase
 
-This directory is synchronized to the corrected manuscript source `HighlandValidation_rev11.tex`.
+This directory is synchronized to the corrected manuscript source `HighlandValidation_rev14.tex`.
 
 ## What the production simulation is
 
-The Python production study is a **controlled model-internal detector study**, not full Geant4 transport. `simulation.py` samples the non-factorized radial Moliere `n<=2` distribution from the event's exact ordered material path using the segmented `p(X)` construction in `physics.py`. The integrated angular deflection is represented as a single equivalent kink at the midpoint of the traversed outer target. Tracker hits and the upstream dipole momentum tag are then smeared/reconstructed.
+The Python production study is a **controlled model-internal detector study**, not full Geant4 transport. `simulation.py` traces each event's ordered material path analytically, then samples the non-factorized radial Moliere `n<=2` distribution using the segmented `p(X)` construction in `physics.py`. For caching, momentum is rounded to 0.010 GeV/c, each ordered segment to 0.25 g/cm2, and the cut to 0.002 rad. The integrated angular deflection is represented as a single equivalent kink at the midpoint of the traversed outer target. Tracker hits and the upstream dipole momentum tag are then smeared/reconstructed.
 
 The reference geometry replaces Pb by Cu. `geometry.py` traces exact ordered ray segments `[Al_up, Cu_up, Pb, Cu_down, Al_down]`; energy loss is not reconstructed from unordered totals.
 
@@ -52,7 +52,7 @@ The exact global scalar control minimizes
 
 `RMS(I_nom/c - I_Q)`
 
-over the same valid voxels used for the map comparison. `I_const` is retained separately as the event-count-mean epsilon control.
+over the same valid voxels used for the map comparison. `I_const` is retained separately as the event-count-mean epsilon control over accepted events with a defined, nonzero reconstructed reference path.
 
 ## Commands
 
@@ -65,7 +65,7 @@ python run.py paired out/seed*/metrics.csv --out out/paired_seed_summary.csv
 python plots.py --root out --all
 ```
 
-`tests.py` currently contains 20 physics/geometry closure tests.
+`tests.py` currently contains 23 physics/geometry and analysis closure tests.
 
 ## Geant4 single-slab benchmark
 
@@ -74,15 +74,15 @@ The C++ source under `geant4/` produces single-material Cu or Pb exit-angle dump
 The corrected executable interface requires an explicit random seed:
 
 ```bash
-./mstSim <urban|wentzel|wvi_ss> <Cu|Pb> <thickness_cm> <p_GeV> <nEvents> <seed> <outFile>
+./mstSim <ftfp_bert|ftfp_bert_wvi|wvi_ss> <Cu|Pb> <thickness_cm> <p_GeV> <nEvents> <seed> <outFile>
 ```
 
 Example:
 
 ```bash
-./mstSim urban Cu 15.0 1.0 1000000 12345 out/Cu_t15_p1_urban_s12345.txt
+./mstSim ftfp_bert Cu 15.0 1.0 1000000 12345 out/Cu_t15_p1_ftfp_bert_s12345.txt
 python geant4_compare.py \
-  --file urban=out/Cu_t15_p1_urban_s12345.txt \
+  --file ftfp_bert=out/Cu_t15_p1_ftfp_bert_s12345.txt \
   --material Cu --thickness-cm 15.0 --p 1.0 --n-generated 1000000 \
   --out out/Cu_t15_p1_compare.csv
 ```
@@ -93,17 +93,16 @@ python geant4_compare.py \
 
 reports the corresponding quadratic-weight bias, a median/Rayleigh core-width comparison, delta-method sampling intervals from `M4`, and a finite reduced-angle band decomposition of the second-moment numerator. It also accepts `--path AlCu` or `--path Al25` for future layered/reference transport dumps.
 
-`wvi_ss` is an explicit diagnostic configuration that replaces the reference-list muon MSC with Wentzel-VI plus discrete Coulomb scattering. It is **not** assumed a priori to be more physical than the unmodified reference lists. `mstSim` prints the installed muon process names at runtime so the exact process configuration can be recorded.
+`ftfp_bert` and `ftfp_bert_wvi` name the unmodified Geant4 reference lists directly; they are not described as Urban-versus-Wentzel modes because the installed muon model is version dependent (both use WentzelVI in Geant4 11.4.2). `wvi_ss` is an explicit diagnostic configuration that replaces the reference-list muon MSC with Wentzel-VI plus discrete Coulomb scattering. It is **not** assumed a priori to be more physical than the unmodified reference lists. `mstSim` prints the installed muon process names at runtime so the process configuration can be recorded.
 
 ## Remaining external work
 
 The following cannot be completed from source code alone:
 
-- rerun the full 2e6-event production realization and the full matched-seed ensemble with the current 9x9 raster;
 - rerun the Geant4 slab suite using explicit seeds and retain the angle dumps/metadata;
-- record the actual Geant4 version used for those transport runs;
+- retain the Geant4 version and runtime model/process output with every completed transport run;
 - verify the transcribed Sternheimer density-effect constants against the primary PDG/LBL tables;
 - quantify radiative energy loss if a precision stopping-power uncertainty is claimed;
 - archive the final code release and DOI.
 
-Do not reuse detector-level or Geant4 numerical values from an older raster or an older comparator without regenerating them with this code.
+The current workspace contains the regenerated five-seed, 2e6-event-per-seed detector ensemble. Do not reuse detector-level or Geant4 numerical values from an older raster or an older comparator without regenerating them with this code.

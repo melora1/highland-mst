@@ -26,11 +26,11 @@ for MAT in Cu Pb; do
       counter=$((counter + 1))
       SU=$((510000 + counter * 10 + 1))
       SW=$((510000 + counter * 10 + 2))
-      FU="$OUT/raw/${MAT}_t${T}_p${P}_urban_s${SU}.txt"
-      FW="$OUT/raw/${MAT}_t${T}_p${P}_wentzel_s${SW}.txt"
-      "$EXE" urban "$MAT" "$T" "$P" "$N_EVENTS" "$SU" "$FU" | tee "$OUT/logs/${MAT}_t${T}_p${P}_urban_s${SU}.log"
-      "$EXE" wentzel "$MAT" "$T" "$P" "$N_EVENTS" "$SW" "$FW" | tee "$OUT/logs/${MAT}_t${T}_p${P}_wentzel_s${SW}.log"
-      FILE_ARGS=(--file "urban=$FU" --file "wentzel=$FW")
+      FU="$OUT/raw/${MAT}_t${T}_p${P}_ftfp_bert_s${SU}.txt"
+      FW="$OUT/raw/${MAT}_t${T}_p${P}_ftfp_bert_wvi_s${SW}.txt"
+      "$EXE" ftfp_bert "$MAT" "$T" "$P" "$N_EVENTS" "$SU" "$FU" | tee "$OUT/logs/${MAT}_t${T}_p${P}_ftfp_bert_s${SU}.log"
+      "$EXE" ftfp_bert_wvi "$MAT" "$T" "$P" "$N_EVENTS" "$SW" "$FW" | tee "$OUT/logs/${MAT}_t${T}_p${P}_ftfp_bert_wvi_s${SW}.log"
+      FILE_ARGS=(--file "ftfp_bert=$FU" --file "ftfp_bert_wvi=$FW")
       if [[ "$INCLUDE_WVI_SS" == "1" ]]; then
         SS=$((510000 + counter * 10 + 3))
         FS="$OUT/raw/${MAT}_t${T}_p${P}_wvi_ss_s${SS}.txt"
