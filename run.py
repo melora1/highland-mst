@@ -7,6 +7,9 @@ import argparse
 from pathlib import Path
 import pandas as pd
 
+from config import CUT_CACHE_STEP, MIN_VOX_COUNT, P_CACHE_STEP, SEG_CACHE_STEP, THETA_CUT
+from physics import PofxCache
+
 from analysis import (
     analyze_events,
     analyze_gradient,
@@ -41,16 +44,25 @@ def main():
     p.add_argument("--n-per-setting", type=int, default=500_000)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default="out/equal")
+    p.add_argument("--theta-cut", type=float, default=THETA_CUT)
+    p.add_argument("--n-kinks", type=int, default=1)
+    p.add_argument("--p-cache-step", type=float, default=P_CACHE_STEP)
+    p.add_argument("--segment-cache-step", type=float, default=SEG_CACHE_STEP)
+    p.add_argument("--cut-cache-step", type=float, default=CUT_CACHE_STEP)
 
     p = sub.add_parser("gradient")
     p.add_argument("--n-per-cell", type=int, default=20_000)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default="out/gradient")
+    p.add_argument("--theta-cut", type=float, default=THETA_CUT)
+    p.add_argument("--n-kinks", type=int, default=1)
 
     p = sub.add_parser("analyze")
     p.add_argument("file")
     p.add_argument("--out", required=True)
     p.add_argument("--gradient", action="store_true")
+    p.add_argument("--theta-cut", type=float, default=THETA_CUT)
+    p.add_argument("--min-count", type=int, default=MIN_VOX_COUNT)
 
     p = sub.add_parser("postprocess")
     p.add_argument("outdirs", nargs="+", help="existing result directories containing images.npz")
@@ -68,6 +80,8 @@ def main():
     p.add_argument("--n-per-cell", type=int, default=20_000)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default="out")
+    p.add_argument("--theta-cut", type=float, default=THETA_CUT)
+    p.add_argument("--n-kinks", type=int, default=1)
 
     a = ap.parse_args()
     if a.cmd == "theory":
@@ -78,29 +92,48 @@ def main():
     if a.cmd == "simulate":
         out = Path(a.out)
         out.mkdir(parents=True, exist_ok=True)
-        df, cache = simulate_equal_exposure(a.n_per_setting, a.seed)
+        cache = PofxCache(
+            nmax=2,
+            p_step=a.p_cache_step,
+            segment_step=a.segment_cache_step,
+            cut_step=a.cut_cache_step,
+        )
+        df, cache = simulate_equal_exposure(
+            a.n_per_setting,
+            a.seed,
+            calibrator=cache,
+            theta_cut=a.theta_cut,
+            n_kinks=a.n_kinks,
+        )
         actual = save_events(df, out / "events.parquet")
         print("events:", actual)
-        analyze_events(df, out, cache=cache)
+        analyze_events(df, out, cache=cache, theta_cut=a.theta_cut)
         plot_images(out)
         return
 
     if a.cmd == "gradient":
         out = Path(a.out)
         out.mkdir(parents=True, exist_ok=True)
-        df, cache = simulate_gradient_exposure(a.n_per_cell, a.seed)
+        df, cache = simulate_gradient_exposure(
+            a.n_per_cell,
+            a.seed,
+            theta_cut=a.theta_cut,
+            n_kinks=a.n_kinks,
+        )
         actual = save_events(df, out / "events.parquet")
         print("events:", actual)
-        analyze_gradient(df, out, cache=cache)
+        analyze_gradient(df, out, cache=cache, theta_cut=a.theta_cut)
         plot_gradient(out)
         return
 
     if a.cmd == "analyze":
         df = load_events(a.file)
         if a.gradient:
-            analyze_gradient(df, a.out)
+            analyze_gradient(df, a.out, theta_cut=a.theta_cut)
         else:
-            analyze_events(df, a.out)
+            analyze_events(
+                df, a.out, theta_cut=a.theta_cut, min_count=a.min_count
+            )
         return
 
     if a.cmd == "postprocess":
@@ -148,15 +181,25 @@ def main():
         plot_theory(t)
         e = root / "equal"
         e.mkdir(exist_ok=True)
-        df, cache = simulate_equal_exposure(a.n_per_setting, a.seed)
+        df, cache = simulate_equal_exposure(
+            a.n_per_setting,
+            a.seed,
+            theta_cut=a.theta_cut,
+            n_kinks=a.n_kinks,
+        )
         save_events(df, e / "events.parquet")
-        analyze_events(df, e, cache=cache)
+        analyze_events(df, e, cache=cache, theta_cut=a.theta_cut)
         plot_images(e)
         g = root / "gradient"
         g.mkdir(exist_ok=True)
-        dg, cacheg = simulate_gradient_exposure(a.n_per_cell, a.seed)
+        dg, cacheg = simulate_gradient_exposure(
+            a.n_per_cell,
+            a.seed,
+            theta_cut=a.theta_cut,
+            n_kinks=a.n_kinks,
+        )
         save_events(dg, g / "events.parquet")
-        analyze_gradient(dg, g, cache=cacheg)
+        analyze_gradient(dg, g, cache=cacheg, theta_cut=a.theta_cut)
         plot_gradient(g)
 
 

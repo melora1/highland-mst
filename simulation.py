@@ -140,6 +140,8 @@ def simulate_fixed_node(
     calibrator: PofxCache | None = None,
     reference_target: bool = False,
     steer_compensation: str | None = None,
+    theta_cut: float = THETA_CUT,
+    n_kinks: int = 1,
 ):
     if n <= 0:
         return pd.DataFrame()
@@ -215,21 +217,59 @@ def simulate_fixed_node(
     hit = (true_trace["t_Al"] + true_trace["t_Cu"] + true_trace["t_Pb"]) > 0
     thx = np.zeros(n)
     thy = np.zeros(n)
+    kink_x = kink_y = kink_fractions = None
     if np.any(hit):
-        thx[hit], thy[hit] = calibrator.sample(
-            p_true[hit], true_trace["segments"][hit], rng
-        )
+        if int(n_kinks) == 1:
+            thx[hit], thy[hit] = calibrator.sample(
+                p_true[hit], true_trace["segments"][hit], rng, cut=theta_cut
+            )
+        else:
+            kx, ky, kink_fractions = calibrator.sample_kinks(
+                p_true[hit],
+                true_trace["segments"][hit],
+                rng,
+                n_kinks=int(n_kinks),
+                cut=theta_cut,
+            )
+            kink_x = np.zeros((n, int(n_kinks)))
+            kink_y = np.zeros((n, int(n_kinks)))
+            kink_x[hit] = kx
+            kink_y[hit] = ky
+            thx = np.sum(kink_x, axis=1)
+            thy = np.sum(kink_y, axis=1)
     dth_true = np.hypot(thx, thy)
 
-    # Single-kink PoCA diagnostic: place the equivalent scatter at the exact
-    # midpoint of the traversed outer-target interval, not blindly at z=0.
-    vtx = true_trace["midpoint"]
     tx_out_true = tx1 + thx
     ty_out_true = ty1 + thy
-    h5x = _propagate(vtx[:, 0], tx_out_true, vtx[:, 2], z5)
-    h6x = _propagate(vtx[:, 0], tx_out_true, vtx[:, 2], z6)
-    h5y = _propagate(vtx[:, 1], ty_out_true, vtx[:, 2], z5)
-    h6y = _propagate(vtx[:, 1], ty_out_true, vtx[:, 2], z6)
+    if int(n_kinks) == 1:
+        # Single-kink PoCA diagnostic: place the equivalent scatter at the
+        # exact midpoint of the traversed outer-target interval.
+        vtx = true_trace["midpoint"]
+        h5x = _propagate(vtx[:, 0], tx_out_true, vtx[:, 2], z5)
+        h6x = _propagate(vtx[:, 0], tx_out_true, vtx[:, 2], z6)
+        h5y = _propagate(vtx[:, 1], ty_out_true, vtx[:, 2], z5)
+        h6y = _propagate(vtx[:, 1], ty_out_true, vtx[:, 2], z6)
+    else:
+        # Propagate every local kink through all subsequent free flight.  The
+        # tracker therefore sees both the summed exit angle and the transverse
+        # displacement accumulated between kink locations.
+        s_entry = np.where(np.isfinite(true_trace["s_entry"]), true_trace["s_entry"], 0.0)
+        s_exit = np.where(np.isfinite(true_trace["s_exit"]), true_trace["s_exit"], 0.0)
+        entry = o_true + s_entry[:, None] * u_true
+        exitp = o_true + s_exit[:, None] * u_true
+        xcur, ycur, zcur = entry[:, 0].copy(), entry[:, 1].copy(), entry[:, 2].copy()
+        sx, sy = tx1.copy(), ty1.copy()
+        for j, frac in enumerate(kink_fractions):
+            zk = entry[:, 2] + frac * (exitp[:, 2] - entry[:, 2])
+            xcur = _propagate(xcur, sx, zcur, zk)
+            ycur = _propagate(ycur, sy, zcur, zk)
+            zcur = zk
+            sx += kink_x[:, j]
+            sy += kink_y[:, j]
+        h5x = _propagate(xcur, sx, zcur, z5)
+        h6x = _propagate(xcur, sx, zcur, z6)
+        h5y = _propagate(ycur, sy, zcur, z5)
+        h6y = _propagate(ycur, sy, zcur, z6)
     m5x, m6x, m5y, m6y = map(smear, (h5x, h6x, h5y, h6y))
     tx_out = _slope(z5, z6, m5x, m6x)
     ty_out = _slope(z5, z6, m5y, m6y)
@@ -274,12 +314,21 @@ def simulate_fixed_node(
     _store_segments(data, "ref_true", ref_true["segments"])
     _store_segments(data, "ref_reco", ref_reco["segments"])
     df = pd.DataFrame(data)
-    df["pass_reco"] = df.dth_reco <= THETA_CUT
-    df["pass_true"] = df.dth_true <= THETA_CUT
+    df["pass_reco"] = df.dth_reco <= float(theta_cut)
+    df["pass_true"] = df.dth_true <= float(theta_cut)
+    df["theta_cut"] = float(theta_cut)
+    df["n_kinks"] = int(n_kinks)
     return df
 
 
-def simulate_equal_exposure(n_per_setting=500_000, seed=0, nodes=None, calibrator=None):
+def simulate_equal_exposure(
+    n_per_setting=500_000,
+    seed=0,
+    nodes=None,
+    calibrator=None,
+    theta_cut=THETA_CUT,
+    n_kinks=1,
+):
     nodes = raster_nodes() if nodes is None else np.asarray(nodes, float)
     calibrator = calibrator or PofxCache(nmax=2)
     frames = []
@@ -290,14 +339,26 @@ def simulate_equal_exposure(n_per_setting=500_000, seed=0, nodes=None, calibrato
             if n:
                 frames.append(
                     simulate_fixed_node(
-                        p, int(n), tuple(c), seed=seed, calibrator=calibrator
+                        p,
+                        int(n),
+                        tuple(c),
+                        seed=seed,
+                        calibrator=calibrator,
+                        theta_cut=theta_cut,
+                        n_kinks=n_kinks,
                     )
                 )
     return pd.concat(frames, ignore_index=True), calibrator
 
 
 def simulate_gradient_exposure(
-    n_per_cell=20_000, seed=0, nodes=None, calibrator=None, reference_target=True
+    n_per_cell=20_000,
+    seed=0,
+    nodes=None,
+    calibrator=None,
+    reference_target=True,
+    theta_cut=THETA_CUT,
+    n_kinks=1,
 ):
     """Spatial p-mixture intervention with fixed total incident fluence/cell."""
     nodes = raster_nodes() if nodes is None else np.asarray(nodes, float)
@@ -315,6 +376,8 @@ def simulate_gradient_exposure(
                     seed=seed + 7919 * cell_id,
                     calibrator=calibrator,
                     reference_target=reference_target,
+                    theta_cut=theta_cut,
+                    n_kinks=n_kinks,
                 )
                 d["gradient_cell"] = cell_id
                 frames.append(d)

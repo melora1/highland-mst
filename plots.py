@@ -641,7 +641,7 @@ def plot_gradient(
     names = [observed, predicted, residual]
     labels = [
         r"observed $I_{\rm nom}-I_Q$",
-        "normalization-field predictor",
+        "self-consistent normalization predictor",
         "one-amplitude residual",
     ]
     scales = [obs_scale, pred_scale, obs_scale]
@@ -665,7 +665,7 @@ def plot_gradient(
     p = out / "gradient_summary.csv"
     if p.exists():
         s = pd.read_csv(p)
-        r = s[s.predictor == "normalization_field"]
+        r = s[s.predictor == "self_consistent_normalization_field"]
         if not r.empty:
             row = r.iloc[0]
             axes[2].text(

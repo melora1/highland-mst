@@ -13,7 +13,15 @@ import sys
 import numpy as np
 import pandas as pd
 
-from analysis import CENTERS, PATHS, build_weights, fiducial_voxel_mask, optimal_global_scale, roi_masks
+from analysis import (
+    CENTERS,
+    PATHS,
+    build_weights,
+    fiducial_voxel_mask,
+    highland_path_derivative,
+    optimal_global_scale,
+    roi_masks,
+)
 from config import AL_HALF, MATERIALS, MOMENTA, RADIAL_ETA_MAX, THETA_CUT, VOX_SIZE
 from geometry import trace_paths
 from physics import (
@@ -25,8 +33,10 @@ from physics import (
     constant_calibration,
     constant_path_parameters,
     dedx_of_E,
+    dimensionless_moments_quad,
     energy_after,
     fit_log_asymptote,
+    layers_from_segment_thicknesses,
     phi0,
     phi1,
     radial_moments,
@@ -41,6 +51,7 @@ from simulation import (
     nominal_target_offset_cm,
     raster_nodes,
     seed_entropy,
+    simulate_fixed_node,
 )
 
 TESTS = []
@@ -271,6 +282,50 @@ def sampler_matches_quadrature_and_is_isotropic():
     vx, vy = np.var(xa, ddof=1), np.var(ya, ddof=1)
     assert abs(vx / vy - 1.0) < 0.04, (vx, vy)
     assert abs(np.mean(xa * ya)) < 0.03 * math.sqrt(vx * vy)
+
+
+@test
+def adaptive_quadrature_matches_production_grid():
+    for p in MOMENTA:
+        r = constant_calibration(PATHS["AlCu"], p)
+        for eta_cut in (10.0, r["eta_cut"]):
+            mass, n2, _, *_ = dimensionless_moments_quad(eta_cut, r["B"])
+            mu_quad = n2 / mass
+            from physics import mu2_eta
+
+            assert abs(mu2_eta(eta_cut, r["B"]) / mu_quad - 1.0) < 1e-5
+
+
+@test
+def cut_independent_path_cache_reproduces_direct_calibration():
+    seg = np.array([5.0, 15.0, 0.0, 0.0, 5.0])
+    cache = PofxCache()
+    for cut in (0.1, 0.2, 0.3):
+        cached = cache.calibration(2.0, seg, cut)
+        pp, decoded_seg, cc = cache._decode(cache._key(2.0, seg, cut))
+        direct = calibrate_pofx(layers_from_segment_thicknesses(decoded_seg), pp, cc)
+        for key in ("M2", "M4", "Fc", "epsilon_matched", "epsilon_mixed"):
+            assert abs(cached[key] / direct[key] - 1.0) < 2e-13, (cut, key)
+    assert len(cache._path_cache) == 1
+
+
+@test
+def highland_path_derivative_matches_centered_difference():
+    p = np.array([1.0, 2.0, 6.0])
+    x = np.array([2.8, 7.0, 11.57])
+    h = 1e-5
+    numeric = (theta0_highland(p, x + h) - theta0_highland(p, x - h)) / (2 * h)
+    analytic = highland_path_derivative(p, x)
+    assert np.allclose(analytic, numeric, rtol=2e-9, atol=1e-12)
+
+
+@test
+def multi_kink_transport_is_finite_and_changes_poca_geometry():
+    one = simulate_fixed_node(2.0, 4000, (0.0, 0.0), seed=81, n_kinks=1)
+    three = simulate_fixed_node(2.0, 4000, (0.0, 0.0), seed=81, n_kinks=3)
+    for d in (one, three):
+        assert np.all(np.isfinite(d[["dth_true", "dth_reco", "poca_z"]]))
+    assert np.std(three.poca_z) > np.std(one.poca_z)
 
 
 @test

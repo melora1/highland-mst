@@ -315,6 +315,77 @@ def _dimensionless_moments(eta_cut: float, B: float, nmax: int = 2):
     return mass, n2, n4
 
 
+def dimensionless_moments_quad(eta_cut: float, B: float, nmax: int = 2):
+    """Adaptive-Gauss--Kronrod evaluation of the accepted reduced moments.
+
+    This is intentionally separate from :func:`_dimensionless_moments`, whose
+    production path uses a fixed integration grid.  The radial functions are
+    still the independently quadrature-generated Phi tables, but no production
+    cumulative/trapezoidal moment table is reused here.
+    """
+    eta_cut = float(eta_cut)
+    B = float(B)
+    if eta_cut <= 0.0:
+        return 0.0, 0.0, 0.0
+
+    upper = min(eta_cut, RADIAL_ETA_MAX)
+
+    def integrate_power(power):
+        def f(e):
+            return e**power * float(radial_series_eta(e, B, nmax=nmax, clip=True))
+
+        # Explicit break points prevent interpolation knots at the core/tail
+        # transition from degrading QUADPACK's error estimate.
+        points = [x for x in (1.0, 2.0, 5.0, 10.0, 20.0) if x < upper]
+        bounds = [0.0, *points, upper]
+        value = 0.0
+        error = 0.0
+        for lo, hi in zip(bounds[:-1], bounds[1:]):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", IntegrationWarning)
+                part, err = quad(
+                    f, lo, hi, limit=200, epsabs=2e-11, epsrel=2e-10
+                )
+            value += part
+            error += err
+        return float(value), float(error)
+
+    mass, emass = integrate_power(1)
+    n2, en2 = integrate_power(3)
+    n4, en4 = integrate_power(5)
+    if eta_cut > RADIAL_ETA_MAX and nmax >= 1:
+        e0 = RADIAL_ETA_MAX
+        mass += (1.0 / B) * (1.0 / e0**2 - 1.0 / eta_cut**2)
+        n2 += (2.0 / B) * math.log(eta_cut / e0)
+        n4 += (1.0 / B) * (eta_cut**2 - e0**2)
+    return mass, n2, n4, emass, en2, en4
+
+
+def sample_radial_eta(B: float, size: int, rng, nmax: int = 2):
+    """Draw reduced radial angles directly from the normalized Moliere PDF."""
+    return radial_eta_from_uniform(B, rng.random(int(size)), nmax=nmax)
+
+
+def radial_eta_from_uniform(B: float, uniform, nmax: int = 2):
+    """Inverse-CDF transform for supplied uniform variates.
+
+    Supplying the variates separately lets cache-grid studies use exact common
+    random numbers even when the finer grid changes event grouping.
+    """
+    eta_grid, cdf, _ = radial_cdf_eta(float(B), nmax=nmax)
+    u = np.asarray(uniform, float)
+    eta = np.empty(u.size)
+    end = float(cdf[-1])
+    core = u <= end
+    eta[core] = np.interp(u[core], cdf, eta_grid)
+    if np.any(~core):
+        q = (u[~core] - end) / max(1.0 - end, 1e-30)
+        eta[~core] = RADIAL_ETA_MAX / np.sqrt(
+            np.maximum(1.0 - q, np.finfo(float).tiny)
+        )
+    return eta
+
+
 def mu2_eta(eta_cut: float, B: float, nmax: int = 2) -> float:
     mass, n2, _ = _dimensionless_moments(float(eta_cut), float(B), nmax=nmax)
     return n2 / mass if mass > 0.0 else 0.0
@@ -766,6 +837,31 @@ def layers_from_segment_thicknesses(seg):
     return tuple(Layer(m, t) for m, t in vals if t > 0.0)
 
 
+def split_path_equal_length(path: Sequence[Layer], n_parts: int):
+    """Split an ordered path into equal geometric-length intervals."""
+    n_parts = int(n_parts)
+    if n_parts < 1:
+        raise ValueError("n_parts must be positive")
+    total = sum(float(layer.thickness_cm) for layer in path)
+    if total <= 0.0:
+        return tuple(() for _ in range(n_parts))
+    edges = np.linspace(0.0, total, n_parts + 1)
+    starts = []
+    x = 0.0
+    for layer in path:
+        starts.append((x, x + layer.thickness_cm, layer.material))
+        x += layer.thickness_cm
+    parts = []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        layers = []
+        for a, b, material in starts:
+            overlap = max(0.0, min(hi, b) - max(lo, a))
+            if overlap > 1e-12:
+                layers.append(Layer(material, overlap))
+        parts.append(tuple(layers))
+    return tuple(parts)
+
+
 class PofxCache:
     """Cache p(X) calibration on incident-p and ordered areal-density bins.
 
@@ -780,32 +876,41 @@ class PofxCache:
         nmax: int = 2,
         tol: float = P_BETA_SLICE_TOL,
         screening_weight: str = "dchi_c2",
+        p_step: float = P_CACHE_STEP,
+        segment_step: float = SEG_CACHE_STEP,
+        cut_step: float = CUT_CACHE_STEP,
     ):
         if screening_weight not in {"dchi_c2", "serial"}:
             raise ValueError("screening_weight must be 'dchi_c2' or 'serial'")
         self.nmax = nmax
         self.tol = tol
         self.screening_weight = screening_weight
+        self.p_step = float(p_step)
+        self.segment_step = float(segment_step)
+        self.cut_step = float(cut_step)
+        if min(self.p_step, self.segment_step, self.cut_step) <= 0.0:
+            raise ValueError("cache steps must be positive")
         self._cache = {}
+        self._path_cache = {}
+        self._kink_cache = {}
         self.max_clipped = 0.0
+        self.local_kink_fallbacks = 0
 
-    @staticmethod
-    def _key(p, seg_cm, cut):
+    def _key(self, p, seg_cm, cut):
         mats = ("Al", "Cu", "Pb", "Cu", "Al")
         X = [float(t) * MATERIALS[m].rho for t, m in zip(seg_cm, mats)]
         return (
-            round(float(p) / P_CACHE_STEP),
-            *(round(x / SEG_CACHE_STEP) for x in X),
-            round(float(cut) / CUT_CACHE_STEP),
+            round(float(p) / self.p_step),
+            *(round(x / self.segment_step) for x in X),
+            round(float(cut) / self.cut_step),
         )
 
-    @staticmethod
-    def _decode(key):
-        p = key[0] * P_CACHE_STEP
+    def _decode(self, key):
+        p = key[0] * self.p_step
         mats = ("Al", "Cu", "Pb", "Cu", "Al")
-        X = [k * SEG_CACHE_STEP for k in key[1:6]]
+        X = [k * self.segment_step for k in key[1:6]]
         seg = [x / MATERIALS[m].rho for x, m in zip(X, mats)]
-        cut = key[6] * CUT_CACHE_STEP
+        cut = key[6] * self.cut_step
         return p, seg, cut
 
     def calibration(self, p, seg_cm, cut=THETA_CUT):
@@ -816,13 +921,31 @@ class PofxCache:
             if not path:
                 self._cache[key] = None
             else:
-                r = calibrate_pofx(
-                    path,
-                    pp,
-                    theta_cut=cc,
-                    tol=self.tol,
-                    nmax=self.nmax,
-                    screening_weight=self.screening_weight,
+                path_key = key[:6]
+                if path_key not in self._path_cache:
+                    self._path_cache[path_key] = calibrate_pofx(
+                        path,
+                        pp,
+                        theta_cut=THETA_CUT,
+                        tol=self.tol,
+                        nmax=self.nmax,
+                        screening_weight=self.screening_weight,
+                    )
+                base = self._path_cache[path_key]
+                Fc, M2, M4 = radial_moments(
+                    base["chi_c2"], base["B"], cc, nmax=self.nmax
+                )
+                trms = math.sqrt(max(M2, 0.0))
+                r = dict(base)
+                r.update(
+                    Fc=Fc,
+                    M2=M2,
+                    M4=M4,
+                    theta_rms=trms,
+                    k_pofx=cc / base["theta0_pofx"],
+                    eta_cut=cc / math.sqrt(base["chi_c2"] * base["B"]),
+                    epsilon_matched=trms / base["theta_space_pofx"] - 1.0,
+                    epsilon_mixed=trms / base["theta_space_incident"] - 1.0,
                 )
                 self.max_clipped = max(self.max_clipped, r["clipped_fraction"])
                 self._cache[key] = r
@@ -845,23 +968,10 @@ class PofxCache:
             groups.setdefault(self._key(p[i], segments[i], cuts[i]), []).append(i)
         for key, idx_list in groups.items():
             idx = np.asarray(idx_list, int)
-            # Decode the bucket exactly once; do not let the first raw event
-            # subtly choose one side of a cache bin.
-            pp, seg, cc = self._decode(key)
-            path = layers_from_segment_thicknesses(seg)
-            r = (
-                None
-                if not path
-                else calibrate_pofx(
-                    path,
-                    pp,
-                    theta_cut=cc,
-                    tol=self.tol,
-                    nmax=self.nmax,
-                    screening_weight=self.screening_weight,
-                )
-            )
-            self._cache[key] = r
+            # calibration() decodes the bucket rather than allowing the first
+            # raw event to choose one side of a bin.
+            _, _, cc = self._decode(key)
+            r = self.calibration(p[idx[0]], segments[idx[0]], cc)
             if r is None:
                 continue
             self.max_clipped = max(self.max_clipped, r["clipped_fraction"])
@@ -873,40 +983,117 @@ class PofxCache:
             theta_rms=trms, epsilon_matched=eps_match, epsilon_mixed=eps_mix, p_out=pout
         )
 
-    def sample(self, p, segments, rng):
+    def sample(self, p, segments, rng, cut=THETA_CUT):
         p = np.asarray(p, float)
         segments = np.asarray(segments, float)
         tx = np.zeros(p.size)
         ty = np.zeros(p.size)
+        uniform = rng.random(p.size)
+        azimuth = rng.uniform(0.0, 2.0 * math.pi, p.size)
         # Group by cache key to vectorise sampling from each radial CDF.
-        keys = [
-            self._key(p[i], segments[i], THETA_CUT)[:-1]
-            + (round(THETA_CUT / CUT_CACHE_STEP),)
-            for i in range(p.size)
-        ]
+        keys = [self._key(p[i], segments[i], cut) for i in range(p.size)]
         groups = {}
         for i, k in enumerate(keys):
             groups.setdefault(k, []).append(i)
         for k, idx_list in groups.items():
             idx = np.asarray(idx_list, int)
-            r = self.calibration(p[idx[0]], segments[idx[0]], THETA_CUT)
+            r = self.calibration(p[idx[0]], segments[idx[0]], cut)
             if r is None:
                 continue
             B, c2 = r["B"], r["chi_c2"]
-            eta_grid, cdf, clipped = radial_cdf_eta(B, nmax=self.nmax)
+            _, _, clipped = radial_cdf_eta(B, nmax=self.nmax)
             self.max_clipped = max(self.max_clipped, clipped)
-            u = rng.random(idx.size)
-            eta = np.empty(idx.size)
-            end = float(cdf[-1])
-            core = u <= end
-            eta[core] = np.interp(u[core], cdf, eta_grid)
-            if np.any(~core):
-                rr = (u[~core] - end) / max(1.0 - end, 1e-30)
-                eta[~core] = RADIAL_ETA_MAX / np.sqrt(
-                    np.maximum(1.0 - rr, np.finfo(float).tiny)
-                )
+            eta = radial_eta_from_uniform(B, uniform[idx], nmax=self.nmax)
             theta = math.sqrt(c2 * B) * eta
-            az = rng.uniform(0.0, 2.0 * math.pi, idx.size)
-            tx[idx] = theta * np.cos(az)
-            ty[idx] = theta * np.sin(az)
+            tx[idx] = theta * np.cos(azimuth[idx])
+            ty[idx] = theta * np.sin(azimuth[idx])
         return tx, ty
+
+    def _local_kink_calibrations(self, p, seg_cm, n_kinks, cut):
+        """Return sequential local calibrations for equal path-length parts."""
+        key = (int(n_kinks),) + self._key(p, seg_cm, cut)
+        if key in self._kink_cache:
+            return self._kink_cache[key]
+        pp, seg, cc = self._decode(key[1:])
+        path = layers_from_segment_thicknesses(seg)
+        if not path:
+            self._kink_cache[key] = None
+            return None
+        whole = calibrate_pofx(
+            path,
+            pp,
+            theta_cut=cc,
+            tol=self.tol,
+            nmax=self.nmax,
+            screening_weight=self.screening_weight,
+        )
+        local = []
+        p_now = pp
+        for part in split_path_equal_length(path, int(n_kinks)):
+            try:
+                r = calibrate_pofx(
+                    part,
+                    p_now,
+                    theta_cut=cc,
+                    tol=self.tol,
+                    nmax=self.nmax,
+                    screening_weight=self.screening_weight,
+                )
+            except ValueError:
+                # Extremely short grazing paths can fall below the formal
+                # Moliere-B validity threshold after subdivision.  Preserve
+                # the local scattering-strength fraction but use the whole-
+                # path B, and expose the count in output metadata.
+                frac = path_mass(part) / max(path_mass(path), 1e-30)
+                r = dict(
+                    chi_c2=whole["chi_c2"] * frac,
+                    B=whole["B"],
+                    p_out=p_now,
+                    clipped_fraction=whole["clipped_fraction"],
+                    local_B_fallback=True,
+                )
+                self.local_kink_fallbacks += 1
+            local.append(r)
+            p_now = r["p_out"]
+        self._kink_cache[key] = tuple(local)
+        return self._kink_cache[key]
+
+    def sample_kinks(self, p, segments, rng, n_kinks, cut=THETA_CUT):
+        """Sample independent local kicks along an ordered degrading path.
+
+        For three kinks the geometric nodes are the path quartiles; in general
+        they are j/(N+1).  Local Moliere parameters are computed on equal-length
+        ordered path partitions with the exit momentum of one partition feeding
+        the next.
+        """
+        p = np.asarray(p, float)
+        segments = np.asarray(segments, float)
+        n_kinks = int(n_kinks)
+        if n_kinks < 1:
+            raise ValueError("n_kinks must be positive")
+        tx = np.zeros((p.size, n_kinks))
+        ty = np.zeros((p.size, n_kinks))
+        uniform = rng.random((p.size, n_kinks))
+        azimuth = rng.uniform(0.0, 2.0 * math.pi, (p.size, n_kinks))
+        keys = [self._key(p[i], segments[i], cut) for i in range(p.size)]
+        groups = {}
+        for i, key in enumerate(keys):
+            groups.setdefault(key, []).append(i)
+        for key, idx_list in groups.items():
+            idx = np.asarray(idx_list, int)
+            local = self._local_kink_calibrations(
+                p[idx[0]], segments[idx[0]], n_kinks, cut
+            )
+            if local is None:
+                continue
+            for j, r in enumerate(local):
+                B, c2 = r["B"], r["chi_c2"]
+                self.max_clipped = max(
+                    self.max_clipped, float(r.get("clipped_fraction", 0.0))
+                )
+                eta = radial_eta_from_uniform(B, uniform[idx, j], nmax=self.nmax)
+                theta = math.sqrt(c2 * B) * eta
+                tx[idx, j] = theta * np.cos(azimuth[idx, j])
+                ty[idx, j] = theta * np.sin(azimuth[idx, j])
+        fractions = np.arange(1, n_kinks + 1, dtype=float) / (n_kinks + 1.0)
+        return tx, ty, fractions

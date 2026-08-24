@@ -32,6 +32,7 @@ from config import (
 from physics import (
     Layer,
     PofxCache,
+    beta_of,
     calibrate_pofx,
     constant_calibration,
     epsilon_asymptotic,
@@ -88,6 +89,7 @@ PATHS = {
 }
 
 AXIAL_ORDERED = (Layer("Al", 5.0), Layer("Cu", 15.0), Layer("Al", 5.0))
+PBCROSSING_ORDERED = (Layer("Al", 5.0), Layer("Pb", 15.0), Layer("Al", 5.0))
 OFFCU_ORDERED = (Layer("Al", 25.0),)
 
 
@@ -141,7 +143,11 @@ def run_theory(outdir):
     # carried so their finite-loss spread is a visible model systematic rather
     # than an arbitrary hidden convention.
     rows = []
-    for label, path in (("AlCu", AXIAL_ORDERED), ("Al25", OFFCU_ORDERED)):
+    for label, path in (
+        ("AlCu", AXIAL_ORDERED),
+        ("AlPb", PBCROSSING_ORDERED),
+        ("Al25", OFFCU_ORDERED),
+    ):
         for p in MOMENTA:
             rd = calibrate_pofx(path, p, THETA_CUT, nmax=2, screening_weight="dchi_c2")
             rs = calibrate_pofx(path, p, THETA_CUT, nmax=2, screening_weight="serial")
@@ -323,22 +329,22 @@ def image_from_events(df, weights):
     return image, count
 
 
-def _central_p_only_eps(p, cache):
+def _central_p_only_eps(p, cache, theta_cut=THETA_CUT):
     p = np.asarray(p, float)
     seg = np.tile(np.array([5.0, 15.0, 0.0, 0.0, 5.0]), (p.size, 1))
-    return cache.arrays(p, seg, THETA_CUT)["epsilon_mixed"]
+    return cache.arrays(p, seg, theta_cut)["epsilon_mixed"]
 
 
-def build_weights(df, cache=None):
+def build_weights(df, cache=None, theta_cut=THETA_CUT):
     """Fixed-cut weights with all energy-loss quantities kept distinct."""
     cache = cache or PofxCache(nmax=2)
     p = df.p_meas.to_numpy(float)
     dth = df.dth_reco.to_numpy(float)
     xx0 = df.xx0_ref_reco.to_numpy(float)
     tspace_incident = theta_space_highland(p, xx0)
-    q_reco = cache.arrays(p, segment_matrix(df, "ref_reco"), THETA_CUT)
+    q_reco = cache.arrays(p, segment_matrix(df, "ref_reco"), theta_cut)
     q_true = cache.arrays(
-        df.p_true.to_numpy(float), segment_matrix(df, "ref_true"), THETA_CUT
+        df.p_true.to_numpy(float), segment_matrix(df, "ref_true"), theta_cut
     )
 
     w_nom = (
@@ -347,7 +353,7 @@ def build_weights(df, cache=None):
         )
         ** 2
     )
-    eps_p = _central_p_only_eps(p, cache)
+    eps_p = _central_p_only_eps(p, cache, theta_cut=theta_cut)
     den_p = (1.0 + eps_p) * tspace_incident
     w_p = np.divide(dth, den_p, out=np.zeros_like(dth), where=den_p > 0) ** 2
     w_Q = (
@@ -408,6 +414,7 @@ def build_weights(df, cache=None):
         I_ideal=w_ideal,
         I_const=w_const,
         eps_event=eps_event,
+        eps_matched_event=q_reco["epsilon_matched"],
         valid_reference=valid_reference,
         eps_p=eps_p,
         eps_bar_event_mean=eps_bar_event,
@@ -435,9 +442,9 @@ def roi_masks(guard_gap_cm=0.0):
     return pb, cu
 
 
-def image_metrics(img, counts, guard_gap_cm=0.0):
+def image_metrics(img, counts, guard_gap_cm=0.0, min_count=MIN_VOX_COUNT):
     pb, cu = roi_masks(guard_gap_cm=guard_gap_cm)
-    valid = valid_voxel_mask(counts, img)
+    valid = valid_voxel_mask(counts, img, min_count=min_count)
     pb &= valid
     cu &= valid
     a, b = img[pb], img[cu]
@@ -468,14 +475,23 @@ def image_metrics(img, counts, guard_gap_cm=0.0):
     )
 
 
-def guard_gap_sensitivity(images, counts, gaps=ROI_GUARD_GAPS_CM):
+def guard_gap_sensitivity(
+    images, counts, gaps=ROI_GUARD_GAPS_CM, min_count=MIN_VOX_COUNT
+):
     """ROI-metric sensitivity to a finite gap between Pb and Cu comparison ROIs."""
     rows = []
     for gap in gaps:
         for name, img in images.items():
             if name not in ("I_nom", "I_p", "I_Q", "I_ideal", "I_const", "I_scale_opt"):
                 continue
-            rows.append(dict(image=name, **image_metrics(img, counts, guard_gap_cm=gap)))
+            rows.append(
+                dict(
+                    image=name,
+                    **image_metrics(
+                        img, counts, guard_gap_cm=gap, min_count=min_count
+                    ),
+                )
+            )
     return pd.DataFrame(rows)
 
 
@@ -516,7 +532,9 @@ def roi_spill_diagnostics(df, gaps=ROI_GUARD_GAPS_CM):
     return pd.DataFrame(rows)
 
 
-def response_closure_by_momentum(df, weights, cache, generated=None):
+def response_closure_by_momentum(
+    df, weights, cache, generated=None, theta_cut=THETA_CUT
+):
     """Per-setting closure and detector-response decomposition on accepted events.
 
     All rows use the same reconstructed-cut-selected event sample so differences
@@ -529,9 +547,9 @@ def response_closure_by_momentum(df, weights, cache, generated=None):
     seg_true = segment_matrix(df, "ref_true")
     seg_reco = segment_matrix(df, "ref_reco")
 
-    q_true = cache.arrays(p_true, seg_true, THETA_CUT)["theta_rms"]
-    q_reco_truep = cache.arrays(p_true, seg_reco, THETA_CUT)["theta_rms"]
-    q_true_measp = cache.arrays(p_meas, seg_true, THETA_CUT)["theta_rms"]
+    q_true = cache.arrays(p_true, seg_true, theta_cut)["theta_rms"]
+    q_reco_truep = cache.arrays(p_true, seg_reco, theta_cut)["theta_rms"]
+    q_true_measp = cache.arrays(p_meas, seg_true, theta_cut)["theta_rms"]
 
     def sq(num, den):
         return np.divide(num, den, out=np.zeros_like(num), where=den > 0) ** 2
@@ -853,11 +871,97 @@ def optimal_global_scale(I_nom, I_Q, valid):
     return num / den
 
 
-def analyze_events(df, outdir, cache=None):
+def highland_path_derivative(p_gev, x_over_x0):
+    """Analytic d(theta0)/d(x/X0) for manuscript Eq. (1)."""
+    p = np.asarray(p_gev, float)
+    x = np.asarray(x_over_x0, float)
+    beta = beta_of(p)
+    theta0 = theta0_highland(p, x)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        log_factor = 1.0 + 0.038 * np.log(x / (beta * beta))
+        relative = (0.5 * log_factor + 0.038) / (x * log_factor)
+        derivative = theta0 * relative
+    return np.where(x > 0.0, derivative, np.nan)
+
+
+def path_length_error_diagnostics(df, n_bins=10):
+    """Bin true/reconstructed path error and propagate it through Eq. (1).
+
+    The primary ``reference_geometry`` rows compare exact and reconstructed
+    rays under the same Al+Cu material hypothesis, isolating path geometry.
+    ``physical_vs_reference`` is retained as a visibly composition-confounded
+    diagnostic for Pb-crossing events.
+    """
+    p = df.p_true.to_numpy(float)
+    reco = df.xx0_ref_reco.to_numpy(float)
+    rows = []
+    comparisons = (
+        ("reference_geometry", df.xx0_ref_true.to_numpy(float)),
+        ("physical_vs_reference", df.xx0_true.to_numpy(float)),
+    )
+    for label, true in comparisons:
+        finite = np.isfinite(true) & np.isfinite(reco) & (true > 0.0)
+        if not np.any(finite):
+            continue
+        # Quantile bins keep the requested roughly ten-bin diagnostic populated
+        # despite the strongly bimodal Al-only/Al+Cu path distribution.
+        edges = np.unique(np.quantile(true[finite], np.linspace(0.0, 1.0, n_bins + 1)))
+        if edges.size < 2:
+            continue
+        which = np.clip(np.digitize(true, edges[1:-1], right=False), 0, edges.size - 2)
+        delta = reco - true
+        deriv = highland_path_derivative(p, true)
+        theta0 = theta0_highland(p, true)
+        for j in range(edges.size - 1):
+            m = finite & (which == j)
+            if not np.any(m):
+                continue
+            propagated = deriv[m] * delta[m]
+            relative = np.divide(
+                propagated,
+                theta0[m],
+                out=np.full(np.sum(m), np.nan),
+                where=theta0[m] > 0,
+            )
+            x_mean = float(np.mean(true[m]))
+            p_mean = float(np.mean(p[m]))
+            rms_x = float(np.sqrt(np.mean(delta[m] ** 2)))
+            derivative_at_mean = float(highland_path_derivative(p_mean, x_mean))
+            theta0_at_mean = float(theta0_highland(p_mean, x_mean))
+            propagated_bin = abs(derivative_at_mean) * rms_x
+            rows.append(
+                dict(
+                    comparison=label,
+                    bin=j,
+                    x_true_min=float(edges[j]),
+                    x_true_max=float(edges[j + 1]),
+                    x_true_mean=x_mean,
+                    p_true_mean=p_mean,
+                    n_events=int(np.sum(m)),
+                    rms_x_error=rms_x,
+                    bias_x_error=float(np.mean(delta[m])),
+                    dtheta0_dx_at_bin_mean=derivative_at_mean,
+                    rms_theta0_error_rad=propagated_bin,
+                    epsilon_path_rms=propagated_bin / theta0_at_mean,
+                    eventwise_epsilon_path_rms=float(
+                        np.sqrt(np.nanmean(relative * relative))
+                    ),
+                )
+            )
+    return pd.DataFrame(rows)
+
+
+def analyze_events(
+    df,
+    outdir,
+    cache=None,
+    theta_cut=THETA_CUT,
+    min_count=MIN_VOX_COUNT,
+):
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
-    use = df[df.pass_reco].reset_index(drop=True)
-    weights, cache = build_weights(use, cache=cache)
+    use = df[df.dth_reco.to_numpy(float) <= float(theta_cut)].reset_index(drop=True)
+    weights, cache = build_weights(use, cache=cache, theta_cut=theta_cut)
     images = {}
     counts = None
 
@@ -870,7 +974,7 @@ def analyze_events(df, outdir, cache=None):
     # Exact one-parameter scale-null control requested in the manuscript:
     # minimize RMS(I_nom/c - I_Q) over the same valid voxel population.
     valid_scale = valid_voxel_mask(
-        counts, images["I_nom"], images["I_Q"]
+        counts, images["I_nom"], images["I_Q"], min_count=min_count
     )
     c_opt = optimal_global_scale(images["I_nom"], images["I_Q"], valid_scale)
     images["I_scale_opt"] = (
@@ -879,7 +983,12 @@ def analyze_events(df, outdir, cache=None):
 
     metric_rows = []
     for name in ("I_nom", "I_const", "I_scale_opt", "I_p", "I_Q", "I_ideal"):
-        metric_rows.append(dict(image=name, **image_metrics(images[name], counts)))
+        metric_rows.append(
+            dict(
+                image=name,
+                **image_metrics(images[name], counts, min_count=min_count),
+            )
+        )
     pd.DataFrame(metric_rows).to_csv(out / "metrics.csv", index=False)
 
     path_residual_diagnostics(use, weights).to_csv(
@@ -889,12 +998,17 @@ def analyze_events(df, outdir, cache=None):
         out / "split_half_noise.csv", index=False
     )
     path_class_migration(use).to_csv(out / "path_class_migration.csv", index=False)
+    path_length_error_diagnostics(df).to_csv(
+        out / "path_length_error.csv", index=False
+    )
     adaptive_retention(df).to_csv(out / "adaptive_retention.csv", index=False)
-    guard_gap_sensitivity(images, counts).to_csv(
+    guard_gap_sensitivity(images, counts, min_count=min_count).to_csv(
         out / "roi_guard_gap_sensitivity.csv", index=False
     )
     roi_spill_diagnostics(use).to_csv(out / "roi_spill.csv", index=False)
-    response_closure_by_momentum(use, weights, cache, generated=df).to_csv(
+    response_closure_by_momentum(
+        use, weights, cache, generated=df, theta_cut=theta_cut
+    ).to_csv(
         out / "weight_closure_by_momentum.csv", index=False
     )
     roi_split_half_diagnostics(use, weights).to_csv(
@@ -940,42 +1054,51 @@ def analyze_events(df, outdir, cache=None):
                 ),
                 screening_weight=cache.screening_weight,
                 max_clipped=cache.max_clipped,
+                local_kink_fallbacks=getattr(cache, "local_kink_fallbacks", 0),
+                n_kinks=int(use.n_kinks.iloc[0]) if "n_kinks" in use else 1,
+                theta_cut=float(theta_cut),
+                min_vox_count=int(min_count),
                 fiducial_rule=f"voxel fully inside outer Al cube: |coord|+{0.5 * VOX_SIZE:.3f} <= {AL_HALF:.3f} cm",
             )
         ]
     ).to_csv(out / "calibration_summary.csv", index=False)
     return images, counts, weights, cache
 
-def analyze_gradient(df, outdir, cache=None):
-    """Step 5 direct causal test: observed difference, predicted field, residual."""
+def analyze_gradient(df, outdir, cache=None, theta_cut=THETA_CUT):
+    """Spatial-gradient test with self-consistent and closure predictors."""
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
-    use = df[df.pass_reco].reset_index(drop=True)
-    weights, cache = build_weights(use, cache=cache)
+    use = df[df.dth_reco.to_numpy(float) <= float(theta_cut)].reset_index(drop=True)
+    weights, cache = build_weights(use, cache=cache, theta_cut=theta_cut)
     I_nom, counts = image_from_events(use, weights["I_nom"])
     I_Q, _ = image_from_events(use, weights["I_Q"])
     observed = I_nom - I_Q
 
-    # Mechanism predictor: the local mean normalization factor alone.  This is
-    # intentionally *not* an algebraic identity because it omits eventwise w_Q.
+    # Redesigned mechanism predictor: use the self-consistent p(X) mismatch,
+    # whose four-setting span is materially larger than the upstream-tagged
+    # mismatch used in the original gradient diagnostic.
     valid_reference = np.asarray(weights["valid_reference"], bool)
-    excess = np.zeros(len(use), float)
-    excess[valid_reference] = (
-        (1.0 + weights["eps_event"][valid_reference]) ** 2 - 1.0
+    excess_matched = np.zeros(len(use), float)
+    excess_matched[valid_reference] = (
+        (1.0 + weights["eps_matched_event"][valid_reference]) ** 2 - 1.0
     )
     predicted_unweighted, _ = image_from_events(
-        use.loc[valid_reference], excess[valid_reference]
+        use.loc[valid_reference], excess_matched[valid_reference]
     )
 
     # Algebraic closure predictor.  Since w_nom-w_Q = w_Q*((1+eps)^2-1) for
     # the same event, this should reproduce the observed map up to roundoff and
     # serves as a code/weighting closure check, not as independent evidence.
-    predicted_weighted, _ = image_from_events(use, weights["I_Q"] * excess)
+    excess_mixed = np.zeros(len(use), float)
+    excess_mixed[valid_reference] = (
+        (1.0 + weights["eps_event"][valid_reference]) ** 2 - 1.0
+    )
+    predicted_weighted, _ = image_from_events(use, weights["I_Q"] * excess_mixed)
 
     summaries = []
     residuals = {}
     for label, predicted in (
-        ("normalization_field", predicted_unweighted),
+        ("self_consistent_normalization_field", predicted_unweighted),
         ("wQ_weighted_closure", predicted_weighted),
     ):
         valid = valid_voxel_mask(counts, observed, predicted)
@@ -1004,7 +1127,7 @@ def analyze_gradient(df, outdir, cache=None):
         observed=observed,
         predicted_unweighted=predicted_unweighted,
         predicted_weighted=predicted_weighted,
-        residual_unweighted=residuals["normalization_field"],
+        residual_unweighted=residuals["self_consistent_normalization_field"],
         residual_weighted=residuals["wQ_weighted_closure"],
     )
     return summaries
@@ -1108,7 +1231,7 @@ def refresh_gradient_summary(outdir):
         counts = z["counts"]
         observed = z["observed"]
         preds = {
-            "normalization_field": z["predicted_unweighted"],
+            "self_consistent_normalization_field": z["predicted_unweighted"],
             "wQ_weighted_closure": z["predicted_weighted"],
         }
     rows = []
