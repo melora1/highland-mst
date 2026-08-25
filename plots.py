@@ -326,6 +326,27 @@ def plot_theory(outdir: str | Path, figdir: Path | None = None):
         fig.tight_layout()
         _save(fig, out, "tail_check", figdir)
 
+    p = out / "form_factor_cut_scan.csv"
+    if p.exists():
+        scan = pd.read_csv(p)
+        scan = scan[scan.path == "AlCu"]
+        fig, axes = plt.subplots(2, 2, figsize=(7.6, 6.0), sharex=True, sharey=True)
+        styles = {
+            "none": ("o-", "no FF"),
+            "gaussian": ("s-", "Gaussian FF"),
+            "uniform_sphere": ("^-", "uniform-sphere FF"),
+        }
+        for ax, (momentum, group) in zip(axes.flat, scan.groupby("p_GeV", sort=True)):
+            for model, (style, label) in styles.items():
+                q = group[group.form_factor == model].sort_values("theta_cut_mrad")
+                ax.plot(q.theta_cut_mrad, 100 * q.epsilon, style, ms=4, lw=1.1, label=label)
+            ax.set_title(rf"$p={momentum:g}$ GeV/$c$")
+            ax.set_xlabel(r"$\theta_{\rm cut}$ (mrad)")
+            ax.set_ylabel(r"$\epsilon_M$ (%)")
+        axes[0, 0].legend(frameon=False, fontsize=7)
+        fig.tight_layout()
+        _save(fig, out, "form_factor_cut_sensitivity", figdir)
+
     p = out / "truncation_convergence.csv"
     if p.exists():
         conv = pd.read_csv(p)

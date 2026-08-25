@@ -30,6 +30,8 @@ from config import (
     VOX_SIZE,
 )
 from physics import (
+    FORM_FACTOR_THETA_MATCH,
+    HBARC_MEV_FM,
     Layer,
     PofxCache,
     beta_of,
@@ -39,6 +41,7 @@ from physics import (
     fit_eta1,
     fit_log_asymptote,
     mu2_eta,
+    nuclear_radius_fm,
     optimal_k_constant,
     radial_tail_ratio,
     reduced_parameters,
@@ -120,6 +123,83 @@ def run_theory(outdir):
     collapse = pd.DataFrame(rows)
     collapse.to_csv(out / "theory_collapse.csv", index=False)
 
+    # Finite-nuclear-size sensitivity.  The coherent tail is multiplied by
+    # either requested form factor, while (1+Z|F|^2)/(Z+1) retains the explicit
+    # incoherent floor.  The no-FF column is the unspliced Moliere reference.
+    ff_rows = []
+    scan_rows = []
+    onset_rows = []
+    continuity_rows = []
+    for path_name, X in PATHS.items():
+        for p in MOMENTA:
+            values = {
+                model: constant_calibration(
+                    X, p, THETA_CUT, nmax=2, form_factor=model
+                )
+                for model in ("none", "gaussian", "uniform_sphere")
+            }
+            ff_rows.append(
+                dict(
+                    path=path_name,
+                    p_GeV=p,
+                    epsilon_no_ff=values["none"]["epsilon"],
+                    epsilon_gaussian=values["gaussian"]["epsilon"],
+                    epsilon_uniform_sphere=values["uniform_sphere"]["epsilon"],
+                    ff_systematic_abs=abs(
+                        values["gaussian"]["epsilon"]
+                        - values["uniform_sphere"]["epsilon"]
+                    ),
+                )
+            )
+            continuity = radial_tail_ratio(
+                FORM_FACTOR_THETA_MATCH,
+                values["none"]["chi_c2"],
+                values["none"]["B"],
+                nmax=2,
+            )
+            continuity_rows.append(
+                dict(
+                    path=path_name,
+                    p_GeV=p,
+                    theta_match_mrad=1000 * FORM_FACTOR_THETA_MATCH,
+                    hM_over_hR=continuity,
+                    relative_discontinuity=abs(continuity - 1.0),
+                    pass_10pct=abs(continuity - 1.0) < 0.10,
+                )
+            )
+            for material in (name for name in MATERIALS if X.get(name, 0.0) > 0.0):
+                radius = nuclear_radius_fm(MATERIALS[material].A)
+                onset_rows.append(
+                    dict(
+                        material=material,
+                        p_GeV=p,
+                        A=MATERIALS[material].A,
+                        radius_fm=radius,
+                        theta_FF_mrad=1000 * HBARC_MEV_FM / (1000 * p * radius),
+                    )
+                )
+            for cut in (0.050, 0.100, 0.150, 0.200, 0.300):
+                for model in ("none", "gaussian", "uniform_sphere"):
+                    rcut = constant_calibration(
+                        X, p, cut, nmax=2, form_factor=model
+                    )
+                    scan_rows.append(
+                        dict(
+                            path=path_name,
+                            p_GeV=p,
+                            theta_cut_mrad=1000 * cut,
+                            form_factor=model,
+                            epsilon=rcut["epsilon"],
+                            Fc=rcut["Fc"],
+                        )
+                    )
+    pd.DataFrame(ff_rows).to_csv(out / "form_factor_epsilon_200mrad.csv", index=False)
+    pd.DataFrame(scan_rows).to_csv(out / "form_factor_cut_scan.csv", index=False)
+    pd.DataFrame(onset_rows).drop_duplicates(
+        ["material", "p_GeV"]
+    ).to_csv(out / "form_factor_onset.csv", index=False)
+    pd.DataFrame(continuity_rows).to_csv(out / "form_factor_continuity.csv", index=False)
+
     # Fixed-path momentum-invariance summary.  R and B vary at the 1e-3 level
     # individually but anticorrelate, leaving RB substantially more invariant.
     rb = collapse["R"] * collapse["B"]
@@ -150,6 +230,22 @@ def run_theory(outdir):
     ):
         for p in MOMENTA:
             rd = calibrate_pofx(path, p, THETA_CUT, nmax=2, screening_weight="dchi_c2")
+            ru = calibrate_pofx(
+                path,
+                p,
+                THETA_CUT,
+                nmax=2,
+                screening_weight="dchi_c2",
+                form_factor="uniform_sphere",
+            )
+            rn = calibrate_pofx(
+                path,
+                p,
+                THETA_CUT,
+                nmax=2,
+                screening_weight="dchi_c2",
+                form_factor="none",
+            )
             rs = calibrate_pofx(path, p, THETA_CUT, nmax=2, screening_weight="serial")
             rows.append(
                 dict(
@@ -164,6 +260,10 @@ def run_theory(outdir):
                     B_dchi=rd["B"],
                     B_serial=rs["B"],
                     epsilon_matched_dchi=rd["epsilon_matched"],
+                    epsilon_matched_no_ff=rn["epsilon_matched"],
+                    epsilon_matched_uniform_sphere=ru["epsilon_matched"],
+                    epsilon_matched_ff_spread_pp=100
+                    * abs(rd["epsilon_matched"] - ru["epsilon_matched"]),
                     epsilon_matched_serial=rs["epsilon_matched"],
                     epsilon_matched_spread_pp=100
                     * abs(rd["epsilon_matched"] - rs["epsilon_matched"]),
@@ -1053,6 +1153,8 @@ def analyze_events(
                     np.mean(weights["p_out_reco"] / use.p_meas.to_numpy() - 1.0)
                 ),
                 screening_weight=cache.screening_weight,
+                form_factor=getattr(cache, "form_factor", "none"),
+                theta_match_mrad=1000.0 * getattr(cache, "theta_match", 0.100),
                 max_clipped=cache.max_clipped,
                 local_kink_fallbacks=getattr(cache, "local_kink_fallbacks", 0),
                 n_kinks=int(use.n_kinks.iloc[0]) if "n_kinks" in use else 1,
@@ -1109,11 +1211,17 @@ def analyze_gradient(df, outdir, cache=None, theta_cut=THETA_CUT):
         residuals[label] = residual
         yrms = float(np.sqrt(np.mean(y * y))) if y.size else np.nan
         rrms = float(np.sqrt(np.mean(residual[valid] ** 2))) if y.size else np.nan
+        correlation = float(np.corrcoef(x, y)[0, 1]) if x.size > 1 else np.nan
+        threshold = 0.5 if label == "self_consistent_normalization_field" else np.nan
         summaries.append(
             dict(
                 predictor=label,
                 amplitude=amp,
-                correlation=float(np.corrcoef(x, y)[0, 1]) if x.size > 1 else np.nan,
+                correlation=correlation,
+                preregistered_correlation_threshold=threshold,
+                passes_preregistered_threshold=(correlation >= threshold)
+                if np.isfinite(threshold) and np.isfinite(correlation)
+                else np.nan,
                 observed_rms=yrms,
                 residual_rms=rrms,
                 residual_fraction=rrms / yrms if y.size and yrms else np.nan,

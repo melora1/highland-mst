@@ -4,7 +4,9 @@ This directory is synchronized to the corrected manuscript source `HighlandValid
 
 ## What the production simulation is
 
-The Python production study is a **controlled model-internal detector study**, not full Geant4 transport. `simulation.py` traces each event's ordered material path analytically, then samples the non-factorized radial Moliere `n<=2` distribution using the segmented `p(X)` construction in `physics.py`. For caching, momentum is rounded to 0.010 GeV/c, each ordered segment to 0.25 g/cm2, and the cut to 0.002 rad. The integrated angular deflection is represented as a single equivalent kink at the midpoint of the traversed outer target. Tracker hits and the upstream dipole momentum tag are then smeared/reconstructed.
+The Python production study is a **controlled model-internal detector study**, not full Geant4 transport. `simulation.py` traces each event's ordered material path analytically, then samples the non-factorized radial Moliere `n<=2` distribution using the segmented `p(X)` construction in `physics.py`. The production cache steps are declared in `config.py`. The path is partitioned into equal accumulated `dchi_c^2` intervals and each kink is placed at that interval's `dchi_c^2`-weighted centroid. Tracker hits and the upstream dipole momentum tag are then smeared/reconstructed.
+
+Above 100 mrad the production model splices the Moliere core to a Rutherford tail with a Gaussian nuclear form factor. `--form-factor uniform_sphere` selects `[3 j1(qR)/(qR)]^2`, and `--form-factor none` retains the point-nucleus reference. Both finite-size models keep the explicit incoherent floor `(1 + Z|F|^2)/(Z+1)` for each local material contribution. `form_factor_continuity.csv` is a required validity gate: a row failing the 10% matching criterion must not be presented as a validated absolute prediction.
 
 The reference geometry replaces Pb by Cu. `geometry.py` traces exact ordered ray segments `[Al_up, Cu_up, Pb, Cu_down, Al_down]`; energy loss is not reconstructed from unordered totals.
 
@@ -59,10 +61,12 @@ over the same valid voxels used for the map comparison. `I_const` is retained se
 ```bash
 python tests.py
 python run.py theory --out out/theory
-python run.py simulate --n-per-setting 500000 --seed 0 --out out/equal
-python run.py gradient --n-per-cell 20000 --seed 0 --out out/gradient
+python run.py simulate --n-per-setting 500000 --seed 0 --n-kinks 25 --form-factor gaussian --out out/equal
+python run.py gradient --n-per-cell 20000 --seed 0 --n-kinks 25 --form-factor gaussian --out out/gradient
 python run.py paired out/seed*/metrics.csv --out out/paired_seed_summary.csv
 python plots.py --root out --all
+python validation.py quadrature --n-mc 10000000
+python validation.py kink-composition --n-events 200000
 ```
 
 `tests.py` currently contains 23 physics/geometry and analysis closure tests.
@@ -105,4 +109,4 @@ The following cannot be completed from source code alone:
 - quantify radiative energy loss if a precision stopping-power uncertainty is claimed;
 - archive the final code release and DOI.
 
-The current workspace contains the regenerated five-seed, 2e6-event-per-seed detector ensemble. Do not reuse detector-level or Geant4 numerical values from an older raster or an older comparator without regenerating them with this code.
+The checked-in detector outputs predate the finite-form-factor and equal-`dchi_c^2` kink changes. Regenerate the requested 20-seed ensemble before quoting detector-level values; do not reuse the older five-seed numbers or Geant4 comparators.

@@ -16,10 +16,11 @@ This module deliberately separates three levels of statement:
 
 The radial n<=2 Moliere series is an asymptotic truncation.  Small negative
 regions are clipped only for probability sampling/moments and the clipped mass
-is reported so this regularisation is never silent.  Above the numerical radial
-table, the continuation used here is the point-nucleus Rutherford/Moliere
-asymptote.  It deliberately does NOT include a finite nuclear form factor;
-absolute large-angle predictions therefore require transport/data validation.
+is reported so this regularisation is never silent.  The point-nucleus model is
+retained as an explicit reference.  Production can instead splice its core at
+100 mrad to a Rutherford tail with Gaussian or uniform-sphere nuclear form
+factors and an explicit incoherent floor; splice continuity is reported as a
+validity diagnostic rather than assumed.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ import numpy as np
 _trapz = getattr(np, "trapezoid", None) or np.trapz
 from scipy.integrate import IntegrationWarning, quad, cumulative_trapezoid
 from scipy.optimize import minimize_scalar
-from scipy.special import j0
+from scipy.special import j0, spherical_jn
 
 from config import (
     ALPHA,
@@ -57,6 +58,9 @@ from config import (
 MEV = 1.0e3
 K_BETHE = 0.307075  # MeV mol^-1 cm^2
 _LN10 = math.log(10.0)
+HBARC_MEV_FM = 197.3
+FORM_FACTOR_THETA_MATCH = 0.100
+FORM_FACTOR_MODELS = ("none", "gaussian", "uniform_sphere")
 
 
 # ---------------------------------------------------------------------------
@@ -391,9 +395,160 @@ def mu2_eta(eta_cut: float, B: float, nmax: int = 2) -> float:
     return n2 / mass if mass > 0.0 else 0.0
 
 
-def radial_moments(chi_c2: float, B: float, theta_cut: float, nmax: int = 2):
+def _normalize_form_factor(model: str | None) -> str:
+    model = "none" if model is None else str(model).lower().replace("-", "_")
+    aliases = {"sphere": "uniform_sphere", "uniform": "uniform_sphere"}
+    model = aliases.get(model, model)
+    if model not in FORM_FACTOR_MODELS:
+        raise ValueError(f"form_factor must be one of {FORM_FACTOR_MODELS}")
+    return model
+
+
+def nuclear_radius_fm(A: float) -> float:
+    return 1.2 * float(A) ** (1.0 / 3.0)
+
+
+def nuclear_form_factor_sq(theta, p_gev: float, A: float, model: str):
+    """Squared elastic nuclear form factor in the small-angle q=p*theta limit."""
+    model = _normalize_form_factor(model)
+    theta = np.asarray(theta, float)
+    if model == "none":
+        return np.ones_like(theta)
+    x = p_gev * MEV * theta * nuclear_radius_fm(A) / HBARC_MEV_FM
+    if model == "gaussian":
+        return np.exp(-(x * x) / 5.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.where(np.abs(x) > 1e-12, 3.0 * spherical_jn(1, x) / x, 1.0)
+    return ratio * ratio
+
+
+def _tail_component_tuple(components):
+    """Canonical (fraction, Z, A, p_GeV) tuples for the tail mixture."""
+    if not components:
+        return ()
+    rows = tuple(tuple(map(float, row)) for row in components)
+    total = sum(row[0] for row in rows)
+    if total <= 0.0:
+        return ()
+    return tuple((w / total, z, a, p) for w, z, a, p in rows if w > 0.0)
+
+
+def tail_suppression(theta, components, model: str):
+    """Effective tail multiplier including the explicit incoherent floor.
+
+    Each point-nucleus contribution Z(Z+1) is replaced by
+    Z(Z+1)|F|^2 + Z(1-|F|^2), i.e. its multiplier is
+    (1 + Z|F|^2)/(Z+1).  Component fractions are their local dchi_c^2
+    fractions, so layered and degrading paths are combined at scattering-power
+    level rather than by geometric length.
+    """
+    model = _normalize_form_factor(model)
+    theta = np.asarray(theta, float)
+    if model == "none":
+        return np.ones_like(theta)
+    rows = _tail_component_tuple(components)
+    if not rows:
+        raise ValueError("finite form factor requires tail components")
+    out = np.zeros_like(theta)
+    for frac, Z, A, p in rows:
+        F2 = nuclear_form_factor_sq(theta, p, A, model)
+        out += frac * (1.0 + Z * F2) / (Z + 1.0)
+    return out
+
+
+def _spliced_radial_model(
+    chi_c2: float,
+    B: float,
+    theta_cut: float,
+    nmax: int,
+    components,
+    form_factor: str,
+    theta_match: float,
+):
+    """Moments for a Moliere core spliced to a form-factor Rutherford tail."""
+    s = math.sqrt(chi_c2 * B)
+    eta_match = theta_match / s
+    mass0, n20, n40 = _dimensionless_moments(eta_match, B, nmax=nmax)
+    old_total, _ = radial_total_mass(B, nmax=nmax)
+    core_mass = mass0 / old_total
+    core_n2 = s * s * n20 / old_total
+    core_n4 = s**4 * n40 / old_total
+
+    def tail_integral(power, upper):
+        if upper <= theta_match:
+            return 0.0
+
+        def f(theta):
+            return (
+                2.0
+                * chi_c2
+                * theta ** (power - 3.0)
+                * float(tail_suppression(theta, components, form_factor))
+            )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IntegrationWarning)
+            value, _ = quad(
+                f,
+                theta_match,
+                upper,
+                epsabs=1e-13,
+                epsrel=2e-9,
+                limit=400,
+            )
+        return float(value)
+
+    tail_mass_total = tail_integral(0, np.inf)
+    model_total = core_mass + tail_mass_total
+    upper = max(float(theta_cut), theta_match)
+    accepted_mass = core_mass + tail_integral(0, upper)
+    accepted_n2 = core_n2 + tail_integral(2, upper)
+    accepted_n4 = core_n4 + tail_integral(4, upper)
+    if theta_cut < theta_match:
+        m, q2, q4 = _dimensionless_moments(theta_cut / s, B, nmax=nmax)
+        accepted_mass = m / old_total
+        accepted_n2 = s * s * q2 / old_total
+        accepted_n4 = s**4 * q4 / old_total
+    if accepted_mass <= 0.0 or model_total <= 0.0:
+        return 0.0, 0.0, 0.0, {}
+    diagnostics = dict(
+        form_factor=_normalize_form_factor(form_factor),
+        theta_match=theta_match,
+        continuity_ratio=radial_tail_ratio(theta_match, chi_c2, B, nmax=nmax),
+        incoherent_floor=float(tail_suppression(1e6, components, form_factor)),
+        model_total_mass=model_total,
+    )
+    return (
+        min(max(accepted_mass / model_total, 0.0), 1.0),
+        accepted_n2 / accepted_mass,
+        accepted_n4 / accepted_mass,
+        diagnostics,
+    )
+
+
+def radial_moments(
+    chi_c2: float,
+    B: float,
+    theta_cut: float,
+    nmax: int = 2,
+    *,
+    tail_components=(),
+    form_factor: str = "none",
+    theta_match: float = FORM_FACTOR_THETA_MATCH,
+):
     if chi_c2 <= 0.0 or theta_cut <= 0.0:
         return 0.0, 0.0, 0.0
+    form_factor = _normalize_form_factor(form_factor)
+    if form_factor != "none":
+        return _spliced_radial_model(
+            chi_c2,
+            B,
+            theta_cut,
+            nmax,
+            tail_components,
+            form_factor,
+            theta_match,
+        )[:3]
     s = math.sqrt(chi_c2 * B)
     eta_cut = theta_cut / s
     mass, n2, n4 = _dimensionless_moments(eta_cut, B, nmax=nmax)
@@ -426,6 +581,74 @@ def radial_cdf_eta(B: float, nmax: int = 2):
     return eta, cdf, clipped
 
 
+def spliced_radial_cdf_theta(
+    chi_c2: float,
+    B: float,
+    components,
+    form_factor: str,
+    theta_match: float = FORM_FACTOR_THETA_MATCH,
+    nmax: int = 2,
+    model_total: float | None = None,
+):
+    """Numerical full-distribution CDF for finite-form-factor sampling."""
+    form_factor = _normalize_form_factor(form_factor)
+    if form_factor == "none":
+        raise ValueError("spliced CDF is only needed for a finite form factor")
+    s = math.sqrt(chi_c2 * B)
+    eta_match = theta_match / s
+    core_eta = _RADIAL_INT_GRID[_RADIAL_INT_GRID < eta_match]
+    core_eta = np.unique(np.concatenate([core_eta, [eta_match]]))
+    core_g = radial_series_eta(core_eta, B, nmax=nmax, clip=True)
+    old_total, _ = radial_total_mass(B, nmax=nmax)
+    core_cum = cumulative_trapezoid(core_eta * core_g, core_eta, initial=0.0) / old_total
+    core_theta = s * core_eta
+
+    # The incoherent Rutherford floor has an analytic 1/theta^2 survival
+    # probability.  A four-decade log grid leaves <1e-8 of that already-small
+    # tail outside the table while resolving the coherent first lobes densely.
+    tail_theta = np.geomspace(theta_match, theta_match * 1.0e4, 5001)
+    suppression = tail_suppression(tail_theta, components, form_factor)
+    tail_pdf = 2.0 * chi_c2 * suppression / tail_theta**3
+    tail_cum = cumulative_trapezoid(tail_pdf, tail_theta, initial=0.0)
+    model = (
+        float(model_total)
+        if model_total is not None
+        else _spliced_radial_model(
+            chi_c2,
+            B,
+            theta_match,
+            nmax,
+            components,
+            form_factor,
+            theta_match,
+        )[3]["model_total_mass"]
+    )
+    theta = np.concatenate([core_theta, tail_theta[1:]])
+    cdf = np.concatenate([core_cum, core_cum[-1] + tail_cum[1:]]) / model
+    cdf = np.maximum.accumulate(np.clip(cdf, 0.0, 1.0))
+    return theta, cdf
+
+
+def spliced_theta_from_uniform(
+    chi_c2: float,
+    B: float,
+    uniform,
+    components,
+    form_factor: str,
+    theta_match: float = FORM_FACTOR_THETA_MATCH,
+    nmax: int = 2,
+    table=None,
+):
+    theta, cdf = (
+        spliced_radial_cdf_theta(
+            chi_c2, B, components, form_factor, theta_match=theta_match, nmax=nmax
+        )
+        if table is None
+        else table
+    )
+    return np.interp(np.asarray(uniform, float), cdf, theta, right=theta[-1])
+
+
 # ---------------------------------------------------------------------------
 # Moliere material/path parameters and exact reduced representation
 # ---------------------------------------------------------------------------
@@ -437,6 +660,33 @@ def chi_a2_single(Z: float, p_mev: float, beta: float) -> float:
     return (
         2.007e-5 * Z ** (2.0 / 3.0) * (1.0 + 3.34 * (Z * ALPHA / beta) ** 2) / p_mev**2
     )
+
+
+def constant_tail_components(X_by_material: dict[str, float], p_gev: float):
+    """Return dchi_c^2-weighted nuclear-tail components for a fixed-p path."""
+    beta = float(beta_of(p_gev))
+    p_mev = float(p_gev) * MEV
+    rows = []
+    for name in MAT_ORDER:
+        X = float(X_by_material.get(name, 0.0))
+        if X <= 0.0:
+            continue
+        m = MATERIALS[name]
+        dc2 = chi_c2_single(m.Z, m.A, X, p_mev, beta)
+        rows.append((dc2, m.Z, m.A, float(p_gev)))
+    return _tail_component_tuple(rows)
+
+
+def sliced_tail_components(slices):
+    """Return local-p, dchi_c^2-weighted tail components for a p(X) path."""
+    rows = []
+    for item in slices:
+        m = MATERIALS[item["material"]]
+        dc2 = chi_c2_single(
+            m.Z, m.A, item["X"], item["p"] * MEV, item["beta"]
+        )
+        rows.append((dc2, m.Z, m.A, item["p"]))
+    return _tail_component_tuple(rows)
 
 
 def solve_B(chi_c2: float, chi_a2: float) -> float:
@@ -500,16 +750,27 @@ def constant_calibration(
     p_gev: float,
     theta_cut: float = THETA_CUT,
     nmax: int = 2,
+    form_factor: str = "none",
+    theta_match: float = FORM_FACTOR_THETA_MATCH,
 ):
     rp = reduced_parameters(X_by_material, p_gev)
-    Fc, M2, M4 = radial_moments(rp["chi_c2"], rp["B"], theta_cut, nmax=nmax)
+    form_factor = _normalize_form_factor(form_factor)
+    components = constant_tail_components(X_by_material, p_gev)
+    ff_diag = dict(form_factor=form_factor, theta_match=theta_match)
+    if form_factor == "none":
+        Fc, M2, M4 = radial_moments(
+            rp["chi_c2"], rp["B"], theta_cut, nmax=nmax
+        )
+    else:
+        Fc, M2, M4, ff_diag = _spliced_radial_model(
+            rp["chi_c2"], rp["B"], theta_cut, nmax, components, form_factor, theta_match
+        )
     trms = math.sqrt(M2)
     t0 = rp["theta_space"] / math.sqrt(2.0)
     k = theta_cut / t0
     eta_cut = theta_cut / math.sqrt(rp["chi_c2"] * rp["B"])
-    mu2 = mu2_eta(eta_cut, rp["B"], nmax=nmax)
-    # Exact within the radial model:
-    exact_ratio2 = rp["R"] * rp["B"] * mu2
+    mu2 = M2 / (rp["chi_c2"] * rp["B"])
+    exact_ratio2 = M2 / (rp["theta_space"] * rp["theta_space"])
     return dict(
         **rp,
         Fc=Fc,
@@ -522,6 +783,8 @@ def constant_calibration(
         mu2=mu2,
         exact_ratio2=exact_ratio2,
         clipped_fraction=radial_total_mass(rp["B"], nmax=nmax)[1],
+        tail_components=components,
+        **ff_diag,
     )
 
 
@@ -754,12 +1017,22 @@ def calibrate_pofx(
     tol: float = P_BETA_SLICE_TOL,
     nmax: int = 2,
     screening_weight: str = "dchi_c2",
+    form_factor: str = "gaussian",
+    theta_match: float = FORM_FACTOR_THETA_MATCH,
 ):
     if path_x_over_x0(path) <= 0:
         raise ValueError("empty path")
     slices, E_out = slice_path(path, p_in, tol=tol)
     c2, a2, B = accumulate_moliere_pofx(slices, screening_weight=screening_weight)
-    Fc, M2, M4 = radial_moments(c2, B, theta_cut, nmax=nmax)
+    form_factor = _normalize_form_factor(form_factor)
+    components = sliced_tail_components(slices)
+    ff_diag = dict(form_factor=form_factor, theta_match=theta_match)
+    if form_factor == "none":
+        Fc, M2, M4 = radial_moments(c2, B, theta_cut, nmax=nmax)
+    else:
+        Fc, M2, M4, ff_diag = _spliced_radial_model(
+            c2, B, theta_cut, nmax, components, form_factor, theta_match
+        )
     trms = math.sqrt(max(M2, 0.0))
     xx0 = path_x_over_x0(path)
     th0_px, beta_eff = highland_core_pofx_model(slices, xx0)
@@ -792,7 +1065,9 @@ def calibrate_pofx(
         theta_space_incident=tspace_incident,
         clipped_fraction=radial_total_mass(B, nmax=nmax)[1],
         screening_weight=screening_weight,
+        tail_components=components,
         slices=slices,
+        **ff_diag,
     )
 
 
@@ -802,22 +1077,39 @@ def efficiency_pofx(
     k: float,
     nmax: int = 2,
     screening_weight: str = "dchi_c2",
+    form_factor: str = "gaussian",
 ):
     slices, _ = slice_path(path, p_in)
     c2, _, B = accumulate_moliere_pofx(slices, screening_weight=screening_weight)
     t0, _ = highland_core_pofx_model(slices, path_x_over_x0(path))
-    Fc, M2, M4 = radial_moments(c2, B, k * t0, nmax=nmax)
+    Fc, M2, M4 = radial_moments(
+        c2,
+        B,
+        k * t0,
+        nmax=nmax,
+        tail_components=sliced_tail_components(slices),
+        form_factor=form_factor,
+    )
     var = M4 - M2 * M2
     return math.sqrt(Fc) * M2 / math.sqrt(var) if Fc > 0 and var > 0 else 0.0
 
 
 def optimal_k_pofx(
-    path: Sequence[Layer], p_in: float, nmax: int = 2, screening_weight: str = "dchi_c2"
+    path: Sequence[Layer],
+    p_in: float,
+    nmax: int = 2,
+    screening_weight: str = "dchi_c2",
+    form_factor: str = "gaussian",
 ):
     r = minimize_scalar(
         lambda k: (
             -efficiency_pofx(
-                path, p_in, k, nmax=nmax, screening_weight=screening_weight
+                path,
+                p_in,
+                k,
+                nmax=nmax,
+                screening_weight=screening_weight,
+                form_factor=form_factor,
             )
         ),
         bounds=(0.5, 8.0),
@@ -862,6 +1154,68 @@ def split_path_equal_length(path: Sequence[Layer], n_parts: int):
     return tuple(parts)
 
 
+def split_path_equal_dchi_c2(path: Sequence[Layer], p_in: float, n_parts: int):
+    """Partition an ordered path into equal accumulated dchi_c^2 intervals.
+
+    Returns ``(parts, centroids)``.  Centroids are global geometric path
+    fractions evaluated with dchi_c^2 weighting inside each interval.  The
+    adaptive p(X) slices provide the local scattering power; boundaries may
+    therefore cut a material slice and are not constrained to equal length.
+    """
+    n_parts = int(n_parts)
+    if n_parts < 1:
+        raise ValueError("n_parts must be positive")
+    slices, _ = slice_path(path, p_in)
+    if not slices:
+        return tuple(() for _ in range(n_parts)), np.zeros(n_parts)
+    records = []
+    z = 0.0
+    for item in slices:
+        length = float(item["thickness_cm"])
+        m = MATERIALS[item["material"]]
+        dc2 = chi_c2_single(
+            m.Z, m.A, item["X"], item["p"] * MEV, item["beta"]
+        )
+        records.append((z, z + length, item["material"], dc2))
+        z += length
+    total_length = z
+    total_c2 = sum(row[3] for row in records)
+    if total_c2 <= 0.0 or total_length <= 0.0:
+        return tuple(() for _ in range(n_parts)), np.zeros(n_parts)
+
+    targets = np.linspace(0.0, total_c2, n_parts + 1)
+    parts = []
+    centroids = []
+    for wlo, whi in zip(targets[:-1], targets[1:]):
+        layers = []
+        centroid_num = 0.0
+        part_weight = 0.0
+        accumulated = 0.0
+        for zlo, zhi, material, weight in records:
+            next_weight = accumulated + weight
+            ov_lo = max(wlo, accumulated)
+            ov_hi = min(whi, next_weight)
+            if ov_hi > ov_lo + 1e-18:
+                f0 = (ov_lo - accumulated) / weight
+                f1 = (ov_hi - accumulated) / weight
+                piece_lo = zlo + f0 * (zhi - zlo)
+                piece_hi = zlo + f1 * (zhi - zlo)
+                piece_length = piece_hi - piece_lo
+                piece_weight = ov_hi - ov_lo
+                if layers and layers[-1].material == material:
+                    layers[-1] = Layer(material, layers[-1].thickness_cm + piece_length)
+                else:
+                    layers.append(Layer(material, piece_length))
+                centroid_num += piece_weight * 0.5 * (piece_lo + piece_hi)
+                part_weight += piece_weight
+            accumulated = next_weight
+        parts.append(tuple(layers))
+        centroids.append(
+            centroid_num / part_weight / total_length if part_weight > 0.0 else 0.0
+        )
+    return tuple(parts), np.asarray(centroids, float)
+
+
 class PofxCache:
     """Cache p(X) calibration on incident-p and ordered areal-density bins.
 
@@ -876,6 +1230,8 @@ class PofxCache:
         nmax: int = 2,
         tol: float = P_BETA_SLICE_TOL,
         screening_weight: str = "dchi_c2",
+        form_factor: str = "gaussian",
+        theta_match: float = FORM_FACTOR_THETA_MATCH,
         p_step: float = P_CACHE_STEP,
         segment_step: float = SEG_CACHE_STEP,
         cut_step: float = CUT_CACHE_STEP,
@@ -885,6 +1241,8 @@ class PofxCache:
         self.nmax = nmax
         self.tol = tol
         self.screening_weight = screening_weight
+        self.form_factor = _normalize_form_factor(form_factor)
+        self.theta_match = float(theta_match)
         self.p_step = float(p_step)
         self.segment_step = float(segment_step)
         self.cut_step = float(cut_step)
@@ -930,10 +1288,18 @@ class PofxCache:
                         tol=self.tol,
                         nmax=self.nmax,
                         screening_weight=self.screening_weight,
+                        form_factor=self.form_factor,
+                        theta_match=self.theta_match,
                     )
                 base = self._path_cache[path_key]
                 Fc, M2, M4 = radial_moments(
-                    base["chi_c2"], base["B"], cc, nmax=self.nmax
+                    base["chi_c2"],
+                    base["B"],
+                    cc,
+                    nmax=self.nmax,
+                    tail_components=base["tail_components"],
+                    form_factor=self.form_factor,
+                    theta_match=self.theta_match,
                 )
                 trms = math.sqrt(max(M2, 0.0))
                 r = dict(base)
@@ -1003,14 +1369,36 @@ class PofxCache:
             B, c2 = r["B"], r["chi_c2"]
             _, _, clipped = radial_cdf_eta(B, nmax=self.nmax)
             self.max_clipped = max(self.max_clipped, clipped)
-            eta = radial_eta_from_uniform(B, uniform[idx], nmax=self.nmax)
-            theta = math.sqrt(c2 * B) * eta
+            if self.form_factor == "none":
+                eta = radial_eta_from_uniform(B, uniform[idx], nmax=self.nmax)
+                theta = math.sqrt(c2 * B) * eta
+            else:
+                if "_sample_cdf" not in r:
+                    r["_sample_cdf"] = spliced_radial_cdf_theta(
+                        c2,
+                        B,
+                        r["tail_components"],
+                        self.form_factor,
+                        theta_match=self.theta_match,
+                        nmax=self.nmax,
+                        model_total=r.get("model_total_mass"),
+                    )
+                theta = spliced_theta_from_uniform(
+                    c2,
+                    B,
+                    uniform[idx],
+                    r["tail_components"],
+                    self.form_factor,
+                    theta_match=self.theta_match,
+                    nmax=self.nmax,
+                    table=r["_sample_cdf"],
+                )
             tx[idx] = theta * np.cos(azimuth[idx])
             ty[idx] = theta * np.sin(azimuth[idx])
         return tx, ty
 
     def _local_kink_calibrations(self, p, seg_cm, n_kinks, cut):
-        """Return sequential local calibrations for equal path-length parts."""
+        """Return local calibrations and dchi_c^2-weighted centroids."""
         key = (int(n_kinks),) + self._key(p, seg_cm, cut)
         if key in self._kink_cache:
             return self._kink_cache[key]
@@ -1026,10 +1414,13 @@ class PofxCache:
             tol=self.tol,
             nmax=self.nmax,
             screening_weight=self.screening_weight,
+            form_factor=self.form_factor,
+            theta_match=self.theta_match,
         )
+        parts, centroids = split_path_equal_dchi_c2(path, pp, int(n_kinks))
         local = []
         p_now = pp
-        for part in split_path_equal_length(path, int(n_kinks)):
+        for part in parts:
             try:
                 r = calibrate_pofx(
                     part,
@@ -1038,33 +1429,48 @@ class PofxCache:
                     tol=self.tol,
                     nmax=self.nmax,
                     screening_weight=self.screening_weight,
+                    # Local n<=2 Moliere increments must retain their additive
+                    # point-nucleus law.  The finite-size correction is applied
+                    # once to the composed total angle in sample_kinks().
+                    form_factor="none",
+                    theta_match=self.theta_match,
                 )
             except ValueError:
                 # Extremely short grazing paths can fall below the formal
                 # Moliere-B validity threshold after subdivision.  Preserve
                 # the local scattering-strength fraction but use the whole-
                 # path B, and expose the count in output metadata.
-                frac = path_mass(part) / max(path_mass(path), 1e-30)
+                part_slices, E_part_out = slice_path(part, p_now, tol=self.tol)
+                part_c2 = 0.0
+                for item in part_slices:
+                    mat = MATERIALS[item["material"]]
+                    part_c2 += chi_c2_single(
+                        mat.Z,
+                        mat.A,
+                        item["X"],
+                        item["p"] * MEV,
+                        item["beta"],
+                    )
                 r = dict(
-                    chi_c2=whole["chi_c2"] * frac,
+                    chi_c2=part_c2,
                     B=whole["B"],
-                    p_out=p_now,
+                    p_out=_p_of_E(E_part_out),
                     clipped_fraction=whole["clipped_fraction"],
+                    tail_components=sliced_tail_components(part_slices),
                     local_B_fallback=True,
                 )
                 self.local_kink_fallbacks += 1
             local.append(r)
             p_now = r["p_out"]
-        self._kink_cache[key] = tuple(local)
+        self._kink_cache[key] = (tuple(local), centroids, whole)
         return self._kink_cache[key]
 
     def sample_kinks(self, p, segments, rng, n_kinks, cut=THETA_CUT):
         """Sample independent local kicks along an ordered degrading path.
 
-        For three kinks the geometric nodes are the path quartiles; in general
-        they are j/(N+1).  Local Moliere parameters are computed on equal-length
-        ordered path partitions with the exit momentum of one partition feeding
-        the next.
+        Partitions have equal accumulated dchi_c^2, and each returned geometric
+        node is that interval's dchi_c^2-weighted centroid.  The exit momentum
+        of one partition feeds the next.
         """
         p = np.asarray(p, float)
         segments = np.asarray(segments, float)
@@ -1079,13 +1485,16 @@ class PofxCache:
         groups = {}
         for i, key in enumerate(keys):
             groups.setdefault(key, []).append(i)
+        fractions = np.zeros((p.size, n_kinks))
         for key, idx_list in groups.items():
             idx = np.asarray(idx_list, int)
-            local = self._local_kink_calibrations(
+            result = self._local_kink_calibrations(
                 p[idx[0]], segments[idx[0]], n_kinks, cut
             )
-            if local is None:
+            if result is None:
                 continue
+            local, centroids, whole = result
+            fractions[idx, :] = centroids
             for j, r in enumerate(local):
                 B, c2 = r["B"], r["chi_c2"]
                 self.max_clipped = max(
@@ -1095,5 +1504,48 @@ class PofxCache:
                 theta = math.sqrt(c2 * B) * eta
                 tx[idx, j] = theta * np.cos(azimuth[idx, j])
                 ty[idx, j] = theta * np.sin(azimuth[idx, j])
-        fractions = np.arange(1, n_kinks + 1, dtype=float) / (n_kinks + 1.0)
+            if self.form_factor != "none":
+                # Rejection-correct the composed point-nucleus distribution to
+                # the requested matched Rutherford tail.  This avoids applying
+                # a non-additive 100 mrad splice independently to thin slices.
+                pending = idx.copy()
+                while pending.size:
+                    total_x = np.sum(tx[pending], axis=1)
+                    total_y = np.sum(ty[pending], axis=1)
+                    total_theta = np.hypot(total_x, total_y)
+                    probability = np.ones(pending.size)
+                    tail = total_theta > self.theta_match
+                    if np.any(tail):
+                        angle = total_theta[tail]
+                        s_whole = math.sqrt(whole["chi_c2"] * whole["B"])
+                        eta_whole = angle / s_whole
+                        g = radial_series_eta(
+                            eta_whole, whole["B"], nmax=self.nmax, clip=True
+                        )
+                        old_total, _ = radial_total_mass(whole["B"], nmax=self.nmax)
+                        h_moliere = angle * g / (s_whole * s_whole * old_total)
+                        h_target = (
+                            2.0
+                            * whole["chi_c2"]
+                            * tail_suppression(
+                                angle, whole["tail_components"], self.form_factor
+                            )
+                            / angle**3
+                        )
+                        probability[tail] = np.clip(
+                            h_target / np.maximum(h_moliere, 1e-300), 0.0, 1.0
+                        )
+                    rejected = pending[rng.random(pending.size) > probability]
+                    if not rejected.size:
+                        break
+                    for j, r in enumerate(local):
+                        B, c2 = r["B"], r["chi_c2"]
+                        eta = radial_eta_from_uniform(
+                            B, rng.random(rejected.size), nmax=self.nmax
+                        )
+                        theta = math.sqrt(c2 * B) * eta
+                        phi = rng.uniform(0.0, 2.0 * math.pi, rejected.size)
+                        tx[rejected, j] = theta * np.cos(phi)
+                        ty[rejected, j] = theta * np.sin(phi)
+                    pending = rejected
         return tx, ty, fractions

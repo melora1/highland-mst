@@ -2,8 +2,9 @@
 
 Production assumptions are explicit: each nominal momentum setting is re-steered
 onto the requested raster node; Moliere scattering is sampled from the ordered
-p(X) path; the upstream spectrometer tags incident momentum; and PoCA remains a
-single-kink diagnostic rather than a full transport reconstruction.
+p(X) path; the upstream spectrometer tags incident momentum; and PoCA is tested
+against a configurable multi-kink representation rather than treated as full
+transport reconstruction.
 """
 
 from __future__ import annotations
@@ -217,59 +218,46 @@ def simulate_fixed_node(
     hit = (true_trace["t_Al"] + true_trace["t_Cu"] + true_trace["t_Pb"]) > 0
     thx = np.zeros(n)
     thy = np.zeros(n)
-    kink_x = kink_y = kink_fractions = None
+    kink_x = np.zeros((n, int(n_kinks)))
+    kink_y = np.zeros((n, int(n_kinks)))
+    kink_fractions = np.zeros((n, int(n_kinks)))
     if np.any(hit):
-        if int(n_kinks) == 1:
-            thx[hit], thy[hit] = calibrator.sample(
-                p_true[hit], true_trace["segments"][hit], rng, cut=theta_cut
-            )
-        else:
-            kx, ky, kink_fractions = calibrator.sample_kinks(
-                p_true[hit],
-                true_trace["segments"][hit],
-                rng,
-                n_kinks=int(n_kinks),
-                cut=theta_cut,
-            )
-            kink_x = np.zeros((n, int(n_kinks)))
-            kink_y = np.zeros((n, int(n_kinks)))
-            kink_x[hit] = kx
-            kink_y[hit] = ky
-            thx = np.sum(kink_x, axis=1)
-            thy = np.sum(kink_y, axis=1)
+        kx, ky, hit_kink_fractions = calibrator.sample_kinks(
+            p_true[hit],
+            true_trace["segments"][hit],
+            rng,
+            n_kinks=int(n_kinks),
+            cut=theta_cut,
+        )
+        kink_x[hit] = kx
+        kink_y[hit] = ky
+        kink_fractions[hit] = hit_kink_fractions
+        thx = np.sum(kink_x, axis=1)
+        thy = np.sum(kink_y, axis=1)
     dth_true = np.hypot(thx, thy)
 
     tx_out_true = tx1 + thx
     ty_out_true = ty1 + thy
-    if int(n_kinks) == 1:
-        # Single-kink PoCA diagnostic: place the equivalent scatter at the
-        # exact midpoint of the traversed outer-target interval.
-        vtx = true_trace["midpoint"]
-        h5x = _propagate(vtx[:, 0], tx_out_true, vtx[:, 2], z5)
-        h6x = _propagate(vtx[:, 0], tx_out_true, vtx[:, 2], z6)
-        h5y = _propagate(vtx[:, 1], ty_out_true, vtx[:, 2], z5)
-        h6y = _propagate(vtx[:, 1], ty_out_true, vtx[:, 2], z6)
-    else:
-        # Propagate every local kink through all subsequent free flight.  The
-        # tracker therefore sees both the summed exit angle and the transverse
-        # displacement accumulated between kink locations.
-        s_entry = np.where(np.isfinite(true_trace["s_entry"]), true_trace["s_entry"], 0.0)
-        s_exit = np.where(np.isfinite(true_trace["s_exit"]), true_trace["s_exit"], 0.0)
-        entry = o_true + s_entry[:, None] * u_true
-        exitp = o_true + s_exit[:, None] * u_true
-        xcur, ycur, zcur = entry[:, 0].copy(), entry[:, 1].copy(), entry[:, 2].copy()
-        sx, sy = tx1.copy(), ty1.copy()
-        for j, frac in enumerate(kink_fractions):
-            zk = entry[:, 2] + frac * (exitp[:, 2] - entry[:, 2])
-            xcur = _propagate(xcur, sx, zcur, zk)
-            ycur = _propagate(ycur, sy, zcur, zk)
-            zcur = zk
-            sx += kink_x[:, j]
-            sy += kink_y[:, j]
-        h5x = _propagate(xcur, sx, zcur, z5)
-        h6x = _propagate(xcur, sx, zcur, z6)
-        h5y = _propagate(ycur, sy, zcur, z5)
-        h6y = _propagate(ycur, sy, zcur, z6)
+    # Propagate every local kink through all subsequent free flight.  This is
+    # also used for N=1, whose location is the path's dchi_c^2 centroid.
+    s_entry = np.where(np.isfinite(true_trace["s_entry"]), true_trace["s_entry"], 0.0)
+    s_exit = np.where(np.isfinite(true_trace["s_exit"]), true_trace["s_exit"], 0.0)
+    entry = o_true + s_entry[:, None] * u_true
+    exitp = o_true + s_exit[:, None] * u_true
+    xcur, ycur, zcur = entry[:, 0].copy(), entry[:, 1].copy(), entry[:, 2].copy()
+    sx, sy = tx1.copy(), ty1.copy()
+    for j in range(int(n_kinks)):
+        frac = kink_fractions[:, j]
+        zk = entry[:, 2] + frac * (exitp[:, 2] - entry[:, 2])
+        xcur = _propagate(xcur, sx, zcur, zk)
+        ycur = _propagate(ycur, sy, zcur, zk)
+        zcur = zk
+        sx += kink_x[:, j]
+        sy += kink_y[:, j]
+    h5x = _propagate(xcur, sx, zcur, z5)
+    h6x = _propagate(xcur, sx, zcur, z6)
+    h5y = _propagate(ycur, sy, zcur, z5)
+    h6y = _propagate(ycur, sy, zcur, z6)
     m5x, m6x, m5y, m6y = map(smear, (h5x, h6x, h5y, h6y))
     tx_out = _slope(z5, z6, m5x, m6x)
     ty_out = _slope(z5, z6, m5y, m6y)

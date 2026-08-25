@@ -12,6 +12,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from scipy.stats import ks_2samp
 import numpy as np
 import pandas as pd
 
@@ -25,7 +26,14 @@ from analysis import (
     path_length_error_diagnostics,
     valid_voxel_mask,
 )
-from config import MIN_VOX_COUNT, MOMENTA, THETA_CUT
+from config import (
+    CUT_CACHE_STEP,
+    MIN_VOX_COUNT,
+    MOMENTA,
+    P_CACHE_STEP,
+    SEG_CACHE_STEP,
+    THETA_CUT,
+)
 from physics import (
     Layer,
     PofxCache,
@@ -219,8 +227,16 @@ def cache_sensitivity(outdir, n_events=500_000, seed=0):
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
     settings = {
-        "production": dict(p_step=0.010, segment_step=0.25, cut_step=0.002),
-        "fine": dict(p_step=0.001, segment_step=0.025, cut_step=0.0002),
+        "production": dict(
+            p_step=P_CACHE_STEP,
+            segment_step=SEG_CACHE_STEP,
+            cut_step=CUT_CACHE_STEP,
+        ),
+        "fine": dict(
+            p_step=P_CACHE_STEP / 5.0,
+            segment_step=SEG_CACHE_STEP / 5.0,
+            cut_step=CUT_CACHE_STEP / 4.0,
+        ),
     }
     rows = []
     for label, kwargs in settings.items():
@@ -473,6 +489,7 @@ def summarize_kinks(result_dirs, outdir):
     raw.to_csv(out / "kink_sensitivity_raw.csv", index=False)
     metrics = [
         "artifact_rms",
+        "c_opt",
         "scale_opt_residual_rms",
         "p_residual_rms",
         "post_scalar_p_reduction",
@@ -484,25 +501,105 @@ def summarize_kinks(result_dirs, outdir):
         local_kink_fallbacks=("local_kink_fallbacks", "sum"),
     )
     summary.to_csv(out / "kink_sensitivity_summary.csv", index=False)
-    if {3, 5}.issubset(set(summary.n_kinks)):
+    if {5, 25}.issubset(set(summary.n_kinks)):
         a = summary.set_index("n_kinks")
-        conv = abs(
-            a.loc[3, "post_scalar_p_reduction_mean"]
-            / a.loc[5, "post_scalar_p_reduction_mean"]
-            - 1.0
-        )
-        pd.DataFrame(
-            [
+        checks = []
+        for metric in ("artifact_rms", "scale_opt_residual_rms", "post_scalar_p_reduction"):
+            mean5 = a.loc[5, f"{metric}_mean"]
+            mean25 = a.loc[25, f"{metric}_mean"]
+            se = math.sqrt(
+                a.loc[5, f"{metric}_sd"] ** 2 / a.loc[5, "n_seeds"]
+                + a.loc[25, f"{metric}_sd"] ** 2 / a.loc[25, "n_seeds"]
+            )
+            checks.append(
                 dict(
-                    metric="post_scalar_p_reduction",
-                    n3=a.loc[3, "post_scalar_p_reduction_mean"],
-                    n5=a.loc[5, "post_scalar_p_reduction_mean"],
-                    relative_difference=conv,
-                    pass_10pct=conv < 0.10,
+                    metric=metric,
+                    n5=mean5,
+                    n25=mean25,
+                    absolute_difference=abs(mean25 - mean5),
+                    combined_seed_standard_error=se,
+                    pass_within_seed_error=abs(mean25 - mean5) <= se,
                 )
-            ]
-        ).to_csv(out / "kink_convergence.csv", index=False)
+            )
+        c5 = a.loc[5, "c_opt_mean"]
+        c25 = a.loc[25, "c_opt_mean"]
+        checks.append(
+            dict(
+                metric="c_opt_relative_shift",
+                n5=c5,
+                n25=c25,
+                absolute_difference=abs(c25 / c5 - 1.0),
+                combined_seed_standard_error=np.nan,
+                pass_within_seed_error=abs(c25 / c5 - 1.0) <= 0.005,
+            )
+        )
+        pd.DataFrame(checks).to_csv(out / "kink_convergence.csv", index=False)
     return raw, summary
+
+
+def kink_composition_check(
+    outdir,
+    n_events=200_000,
+    seed=20260824,
+    kink_counts=(1, 2, 5, 25),
+    form_factor="gaussian",
+):
+    """Check whether sliced-kink total angles reproduce the N=1 generator."""
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for p in MOMENTA:
+        samples = {}
+        for n_kinks in kink_counts:
+            cache = PofxCache(nmax=2, form_factor=form_factor)
+            p_values = np.full(int(n_events), p)
+            segments = np.tile(AXIAL_SEGMENT, (int(n_events), 1))
+            rng = np.random.default_rng(
+                np.random.SeedSequence([int(seed), int(round(1000 * p)), int(n_kinks)])
+            )
+            tx, ty, _ = cache.sample_kinks(
+                p_values,
+                segments,
+                rng,
+                n_kinks=int(n_kinks),
+                cut=THETA_CUT,
+            )
+            samples[int(n_kinks)] = np.hypot(tx.sum(axis=1), ty.sum(axis=1))
+        base = samples[1]
+        for n_kinks in kink_counts:
+            theta = samples[int(n_kinks)]
+            keep0 = base <= THETA_CUT
+            keep = theta <= THETA_CUT
+            q0 = base[keep0] ** 2
+            q = theta[keep] ** 2
+            m20, m2 = float(q0.mean()), float(q.mean())
+            se0 = math.sqrt(float(q0.var(ddof=1)) / q0.size)
+            se = math.sqrt(float(q.var(ddof=1)) / q.size)
+            combined = math.hypot(se0, se)
+            ks = ks_2samp(base, theta, method="asymp").statistic
+            ks99 = 1.63 * math.sqrt(2.0 / len(theta))
+            rows.append(
+                dict(
+                    p_GeV=p,
+                    n_kinks=int(n_kinks),
+                    n_events=int(n_events),
+                    acceptance=float(keep.mean()),
+                    acceptance_n1=float(keep0.mean()),
+                    accepted_M2=m2,
+                    accepted_M2_n1=m20,
+                    M2_difference=m2 - m20,
+                    M2_combined_se=combined,
+                    M2_z=(m2 - m20) / combined if combined else np.nan,
+                    ks_statistic=ks,
+                    ks_99pct_limit=ks99,
+                    pass_M2_sampling_error=abs(m2 - m20) <= 3.0 * combined,
+                    pass_KS_sampling_error=ks <= ks99,
+                    form_factor=form_factor,
+                )
+            )
+    result = pd.DataFrame(rows)
+    result.to_csv(out / "kink_composition_check.csv", index=False)
+    return result
 
 
 def main():
@@ -531,6 +628,10 @@ def main():
     p = sub.add_parser("summarize-kinks")
     p.add_argument("result_dirs", nargs="+")
     p.add_argument("--out", default="out/validation/kinks")
+    p = sub.add_parser("kink-composition")
+    p.add_argument("--out", default="out/validation/kink_composition")
+    p.add_argument("--n-events", type=int, default=200_000)
+    p.add_argument("--form-factor", choices=("none", "gaussian", "uniform_sphere"), default="gaussian")
     a = ap.parse_args()
     if a.cmd == "quadrature":
         print(quadrature_validation(a.out, n_mc=a.n_mc).to_string(index=False))
@@ -553,6 +654,12 @@ def main():
     elif a.cmd == "summarize-kinks":
         _, s = summarize_kinks(a.result_dirs, a.out)
         print(s.to_string(index=False))
+    elif a.cmd == "kink-composition":
+        print(
+            kink_composition_check(
+                a.out, n_events=a.n_events, form_factor=a.form_factor
+            ).to_string(index=False)
+        )
 
 
 if __name__ == "__main__":

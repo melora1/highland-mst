@@ -37,12 +37,16 @@ from physics import (
     energy_after,
     fit_log_asymptote,
     layers_from_segment_thicknesses,
+    nuclear_form_factor_sq,
+    nuclear_radius_fm,
     phi0,
     phi1,
     radial_moments,
     radial_tail_ratio,
     radial_total_mass,
     reduced_parameters,
+    split_path_equal_dchi_c2,
+    tail_suppression,
     theta0_highland,
     validate_stopping_minima,
 )
@@ -186,6 +190,23 @@ def radial_normalization_clipping_and_absolute_tail():
 
 
 @test
+def finite_form_factor_onset_floor_and_splice_are_explicit():
+    cu = MATERIALS["Cu"]
+    radius = nuclear_radius_fm(cu.A)
+    onset_mrad = 197.3 / (6000.0 * radius) * 1000.0
+    assert abs(onset_mrad - 6.87) < 0.02
+    component = ((1.0, cu.Z, cu.A, 6.0),)
+    assert abs(float(tail_suppression(1e3, component, "gaussian")) - 1.0 / (cu.Z + 1.0)) < 1e-12
+    assert float(nuclear_form_factor_sq(0.0, 6.0, cu.A, "uniform_sphere")) == 1.0
+    point = constant_calibration(PATHS["AlCu"], 6.0, form_factor="none")
+    gauss = constant_calibration(PATHS["AlCu"], 6.0, form_factor="gaussian")
+    sphere = constant_calibration(PATHS["AlCu"], 6.0, form_factor="uniform_sphere")
+    assert abs(gauss["continuity_ratio"] - 1.0) < 0.10
+    assert gauss["M2"] < point["M2"] and sphere["M2"] < point["M2"]
+    assert abs(gauss["epsilon"] - sphere["epsilon"]) > 0.0
+
+
+@test
 def segmented_screening_both_rules_reduce_to_serial_at_constant_p():
     p = 2.0
     b = float(beta_of(p))
@@ -285,6 +306,23 @@ def sampler_matches_quadrature_and_is_isotropic():
 
 
 @test
+def composed_form_factor_kinks_match_whole_path_moment():
+    n = 40_000
+    rng = np.random.default_rng(20260825)
+    cache = PofxCache(nmax=2, form_factor="gaussian")
+    p = np.full(n, 2.0)
+    seg0 = np.array([5.0, 15.0, 0.0, 0.0, 5.0])
+    seg = np.tile(seg0, (n, 1))
+    tx, ty, _ = cache.sample_kinks(p, seg, rng, n_kinks=5)
+    theta = np.hypot(tx.sum(axis=1), ty.sum(axis=1))
+    keep = theta <= THETA_CUT
+    q = theta[keep] ** 2
+    r = cache.calibration(2.0, seg0, THETA_CUT)
+    se = math.sqrt(max(r["M4"] - r["M2"] ** 2, 0.0) / q.size)
+    assert abs(float(q.mean()) - r["M2"]) < 6 * se + 0.005 * r["M2"]
+
+
+@test
 def adaptive_quadrature_matches_production_grid():
     for p in MOMENTA:
         r = constant_calibration(PATHS["AlCu"], p)
@@ -326,6 +364,22 @@ def multi_kink_transport_is_finite_and_changes_poca_geometry():
     for d in (one, three):
         assert np.all(np.isfinite(d[["dth_true", "dth_reco", "poca_z"]]))
     assert np.std(three.poca_z) > np.std(one.poca_z)
+
+
+@test
+def kink_partitions_are_equal_dchi_and_centroids_are_ordered():
+    path = (Layer("Al", 5.0), Layer("Cu", 15.0), Layer("Al", 5.0))
+    parts, centroids = split_path_equal_dchi_c2(path, 2.0, 5)
+    strengths = []
+    p_now = 2.0
+    for part in parts:
+        r = calibrate_pofx(part, p_now, form_factor="none")
+        strengths.append(r["chi_c2"])
+        p_now = r["p_out"]
+    strengths = np.asarray(strengths)
+    assert np.ptp(strengths) / strengths.mean() < 0.02, strengths
+    assert np.all(np.diff(centroids) > 0.0)
+    assert np.all((centroids > 0.0) & (centroids < 1.0))
 
 
 @test
