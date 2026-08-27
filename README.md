@@ -6,7 +6,9 @@ This directory is synchronized to the corrected manuscript source `HighlandValid
 
 The Python production study is a **controlled model-internal detector study**, not full Geant4 transport. `simulation.py` traces each event's ordered material path analytically, then samples the non-factorized radial Moliere `n<=2` distribution using the segmented `p(X)` construction in `physics.py`. The production cache steps are declared in `config.py`. The path is partitioned into equal accumulated `dchi_c^2` intervals and each kink is placed at that interval's `dchi_c^2`-weighted centroid. Tracker hits and the upstream dipole momentum tag are then smeared/reconstructed.
 
-Above 100 mrad the production model splices the Moliere core to a Rutherford tail with a Gaussian nuclear form factor. `--form-factor uniform_sphere` selects `[3 j1(qR)/(qR)]^2`, and `--form-factor none` retains the point-nucleus reference. Both finite-size models keep the explicit incoherent floor `(1 + Z|F|^2)/(Z+1)` for each local material contribution. `form_factor_continuity.csv` is a required validity gate: a row failing the 10% matching criterion must not be presented as a validated absolute prediction.
+The former 100 mrad form-factor splice is superseded and must not be used. Finite-size theory now inserts `G(q)` inside the screened-Rutherford characteristic exponent and obtains the angular law by an unexpanded Hankel transform. The kernel has `G(0)=1`, transitions to the approximate quasi-elastic nucleon floor `A/[Z(Z+1)]`, and terminates that floor with a dipole proton form factor. Gaussian and uniform-sphere nuclear shapes are both regenerated, with the floor-omitted difference reported as a systematic.
+
+The inverse-CDF sampler is now generated from the transformed density and closes against transform quadrature at the requested `3.5e-4` relative level. Full finite-size detector production remains gated on performance: direct per-path transform tables are too slow for the fine detector cache, so an interpolated cache in reduced transform variables must pass convergence before production. Point-nucleus detector runs remain available; old finite-size detector outputs are superseded.
 
 The reference geometry replaces Pb by Cu. `geometry.py` traces exact ordered ray segments `[Al_up, Cu_up, Pb, Cu_down, Al_down]`; energy loss is not reconstructed from unordered totals.
 
@@ -61,15 +63,21 @@ over the same valid voxels used for the map comparison. `I_const` is retained se
 ```bash
 python tests.py
 python run.py theory --out out/theory
-python run.py simulate --n-per-setting 500000 --seed 0 --n-kinks 25 --form-factor gaussian --out out/equal
-python run.py gradient --n-per-cell 20000 --seed 0 --n-kinks 25 --form-factor gaussian --out out/gradient
+python run.py simulate --n-per-setting 500000 --seed 0 --n-kinks 25 --form-factor none --out out/equal
+python run.py gradient --n-per-cell 20000 --seed 0 --n-kinks 25 --form-factor none --out out/gradient
 python run.py paired out/seed*/metrics.csv --out out/paired_seed_summary.csv
 python plots.py --root out --all
 python validation.py quadrature --n-mc 10000000
+python validation.py transform-g1
+python validation.py finite-size-transform
+python validation.py decision-gates
+python validation.py analytic-completion
+python validation.py finite-size-sampler --n-mc 10000000
+python validation.py geant4-finite
 python validation.py kink-composition --n-events 200000
 ```
 
-`tests.py` currently contains 23 physics/geometry and analysis closure tests.
+`tests.py` currently contains 31 physics/geometry and analysis closure tests.
 
 ## Geant4 single-slab benchmark
 
@@ -103,8 +111,7 @@ reports the corresponding quadratic-weight bias, a median/Rayleigh core-width co
 
 The following cannot be completed from source code alone:
 
-- rerun the Geant4 slab suite using explicit seeds and retain the angle dumps/metadata;
-- retain the Geant4 version and runtime model/process output with every completed transport run;
+- validate a reduced-variable interpolation cache before finite-size detector production;
 - verify the transcribed Sternheimer density-effect constants against the primary PDG/LBL tables;
 - quantify radiative energy loss if a precision stopping-power uncertainty is claimed;
 - archive the final code release and DOI.

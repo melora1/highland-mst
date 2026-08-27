@@ -12,7 +12,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from scipy.stats import ks_2samp
+from matplotlib.ticker import NullFormatter
+from scipy.stats import ks_2samp, kstest
 import numpy as np
 import pandas as pd
 
@@ -28,6 +29,7 @@ from analysis import (
 )
 from config import (
     CUT_CACHE_STEP,
+    MATERIALS,
     MIN_VOX_COUNT,
     MOMENTA,
     P_CACHE_STEP,
@@ -37,19 +39,776 @@ from config import (
 from physics import (
     Layer,
     PofxCache,
+    beta_of,
     calibrate_pofx,
+    calibrate_pofx_transform,
+    composition_scan,
     constant_calibration,
     dimensionless_moments_quad,
+    efficiency_scan,
+    finite_size_rho,
+    finite_size_eta_from_uniform,
+    finite_size_kernel,
     mu2_eta,
     radial_eta_from_uniform,
     reduced_parameters,
+    _rms_untruncated_diagnostics,
+    tail_ratio_scan,
+    transform_moments_g1,
+    transform_radial_density,
+    untruncated_finite_size_moments,
 )
+from sampling import TransformSampler
 from simulation import load_events, segment_matrix, simulate_fixed_node
 
 
 AXIAL_SEGMENT = np.array([5.0, 15.0, 0.0, 0.0, 5.0])
 AXIAL_PATH = (Layer("Al", 5.0), Layer("Cu", 15.0), Layer("Al", 5.0))
 PB_CROSSING_PATH = (Layer("Al", 5.0), Layer("Pb", 15.0), Layer("Al", 5.0))
+SCAN_PATHS = ("Al25", "Cu15", "AlCu", "Pb15")
+SCAN_FF_MODELS = ("gauss", "sphere")
+STANDARD_COLUMNS = ("ff_model", "floor", "path", "p_GeV", "theta_cut_mrad")
+
+
+def _ordered_columns(frame):
+    """Keep the mandatory merge keys first in every new validation CSV."""
+    return frame.loc[:, [*STANDARD_COLUMNS, *[c for c in frame if c not in STANDARD_COLUMNS]]]
+
+
+def task1_untruncated_rms(outdir):
+    """Run Task 1 for central Al+Cu and enforce the 3-to-10 rad gate."""
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for p_GeV in MOMENTA:
+        for ff_model in SCAN_FF_MODELS:
+            for floor in (True, False):
+                rows.append(
+                    _rms_untruncated_diagnostics(
+                        "AlCu", p_GeV, ff_model, floor, 3.0
+                    )
+                )
+    result = _ordered_columns(pd.DataFrame(rows))
+    result["pass_gate_A"] = result.convergence_3_to_10 < 1.0e-3
+    result.to_csv(out / "untruncated_rms.csv", index=False)
+    assert bool(result.pass_gate_A.all()), "Gate A failed"
+    return result
+
+
+def _point_m4_gate():
+    rows = efficiency_scan("AlCu", 1.0, "point", False, [200.0])
+    rows += efficiency_scan("AlCu", 6.0, "point", False, [200.0])
+    got = {row["p_GeV"]: row["M4_over_M2_sq"] for row in rows}
+    assert abs(got[1.0] / 1.99 - 1.0) < 0.01, got
+    assert abs(got[6.0] / 11.05 - 1.0) < 0.01, got
+    return got
+
+
+def task2_efficiency(outdir):
+    """Run the registered coarse/fine efficiency scan and report true optima."""
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    point = _point_m4_gate()
+    cuts = np.arange(50.0, 300.0 + 0.1, 5.0)
+    rows = []
+    for path in SCAN_PATHS:
+        for p_GeV in MOMENTA:
+            for ff_model in SCAN_FF_MODELS:
+                for floor in (True, False):
+                    rows.extend(
+                        efficiency_scan(path, p_GeV, ff_model, floor, cuts)
+                    )
+    scan = _ordered_columns(pd.DataFrame(rows))
+    scan.to_csv(out / "efficiency_scan.csv", index=False)
+
+    optima = []
+    keys = ["path", "p_GeV", "ff_model", "floor"]
+    for key, group in scan.groupby(keys, sort=False):
+        group = group.sort_values("theta_cut_mrad")
+        values = group.efficiency.to_numpy(float)
+        delta = np.diff(values)
+        maxima = np.flatnonzero((delta[:-1] > 0.0) & (delta[1:] < 0.0)) + 1
+        best = int(np.nanargmax(values))
+        optima.append(
+            dict(
+                path=key[0],
+                p_GeV=key[1],
+                ff_model=key[2],
+                floor=key[3],
+                theta_cut_mrad=float(group.iloc[best].theta_cut_mrad),
+                interior_maximum=bool(maxima.size),
+                n_sign_change_maxima=int(maxima.size),
+                maximum_locations_mrad=";".join(
+                    f"{group.iloc[i].theta_cut_mrad:g}" for i in maxima
+                ),
+                point_M4_gate_1GeV=point[1.0],
+                point_M4_gate_6GeV=point[6.0],
+            )
+        )
+    optimum = _ordered_columns(pd.DataFrame(optima))
+    optimum.to_csv(out / "efficiency_optima.csv", index=False)
+    assert len(optimum) == len(SCAN_PATHS) * len(MOMENTA) * len(SCAN_FF_MODELS) * 2
+    return scan, optimum
+
+
+def task3_composition(outdir):
+    """Write the composition scan and the weighted Al+Cu rho diagnostic."""
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for ff_model in SCAN_FF_MODELS:
+        for floor in (True, False):
+            rows.extend(
+                composition_scan(
+                    SCAN_PATHS,
+                    MOMENTA,
+                    [50, 75, 100, 150, 200, 250, 300],
+                    ff_model,
+                    floor,
+                )
+            )
+    result = _ordered_columns(pd.DataFrame(rows))
+    result.to_csv(out / "composition_scan.csv", index=False)
+    rho = result[
+        (result.path == "AlCu")
+        & (result.p_GeV == 1.0)
+        & (result.ff_model == "gauss")
+        & result.floor
+        & (result.theta_cut_mrad == 200.0)
+    ].iloc[0].rho
+    summary = pd.DataFrame(
+        [
+            dict(
+                ff_model="gauss",
+                floor=True,
+                path="AlCu",
+                p_GeV=1.0,
+                theta_cut_mrad=200.0,
+                rho_weighted=rho,
+                rho_manuscript=0.562,
+                relative_difference=rho / 0.562 - 1.0,
+                manuscript_update_needed=abs(rho / 0.562 - 1.0) > 0.01,
+            )
+        ]
+    )
+    summary = _ordered_columns(summary)
+    summary.to_csv(out / "rho_check.csv", index=False)
+
+    matched_rows = []
+    for ff_model, internal in (("gauss", "gaussian"), ("sphere", "uniform_sphere")):
+        for p_GeV in MOMENTA:
+            reference = calibrate_pofx_transform(
+                AXIAL_PATH, p_GeV, THETA_CUT,
+                form_factor=internal, include_incoherent=True,
+            )
+            k_ref = THETA_CUT / (reference["theta_space_pofx"] / math.sqrt(2.0))
+            eta_ref = reference["eta_cut"]
+            for path in SCAN_PATHS:
+                ordered = {
+                    "Al25": (Layer("Al", 25.0),),
+                    "Cu15": (Layer("Cu", 15.0),),
+                    "AlCu": AXIAL_PATH,
+                    "Pb15": (Layer("Pb", 15.0),),
+                }[path]
+                base = calibrate_pofx_transform(
+                    ordered, p_GeV, THETA_CUT,
+                    form_factor=internal, include_incoherent=True,
+                )
+                cuts = {
+                    "matched_k": k_ref * base["theta_space_pofx"] / math.sqrt(2.0),
+                    "matched_eta_cut": eta_ref * math.sqrt(base["chi_c2"] * base["B"]),
+                }
+                for matching, cut in cuts.items():
+                    q = calibrate_pofx_transform(
+                        ordered, p_GeV, cut,
+                        form_factor=internal, include_incoherent=True,
+                    )
+                    matched_rows.append(dict(
+                        ff_model=ff_model, floor=True, path=path, p_GeV=p_GeV,
+                        theta_cut_mrad=1000.0*cut, matching=matching,
+                        eps_M=q["epsilon_matched"], k_reference=k_ref,
+                        eta_cut_reference=eta_ref,
+                    ))
+    matched = _ordered_columns(pd.DataFrame(matched_rows))
+    matched.to_csv(out / "fig2_matched_composition.csv", index=False)
+
+    spread_rows = []
+    point_spreads = {"matched_k": 13.2, "matched_eta_cut": 19.2}
+    for (ff_model, p_GeV, matching), group in matched.groupby(
+        ["ff_model", "p_GeV", "matching"]
+    ):
+        values = group.set_index("path").eps_M
+        spread_pp = 100.0 * (values["Pb15"] - values["AlCu"])
+        baseline_pp = point_spreads[matching]
+        if np.sign(spread_pp) != np.sign(baseline_pp):
+            change = "inverts"
+        elif abs(spread_pp) > abs(baseline_pp):
+            change = "grows"
+        else:
+            change = "shrinks"
+        spread_rows.append(dict(
+            ff_model=ff_model, floor=True, path="Pb15/AlCu", p_GeV=p_GeV,
+            theta_cut_mrad=np.nan, matching=matching, spread_pp=spread_pp,
+            point_nucleus_spread_pp=baseline_pp, change=change,
+        ))
+    spread = _ordered_columns(pd.DataFrame(spread_rows))
+    spread.to_csv(out / "fig2_spread_summary.csv", index=False)
+
+    fig, axes = plt.subplots(1, 2, figsize=(9.0, 3.5), sharey=True)
+    for ax, matching in zip(axes, ("matched_k", "matched_eta_cut")):
+        for ff_model, style in (("gauss", "-"), ("sphere", "--")):
+            for p_GeV, marker in zip(MOMENTA, ("o", "s", "^", "D")):
+                q = matched[(matched.matching == matching)
+                            & (matched.ff_model == ff_model)
+                            & (matched.p_GeV == p_GeV)].set_index("path")
+                ax.plot(
+                    SCAN_PATHS, 100.0*q.loc[list(SCAN_PATHS)].eps_M,
+                    linestyle=style, marker=marker, ms=3,
+                    label=f"{ff_model}, {p_GeV:g} GeV/c",
+                )
+        ax.set_title(matching.replace("_", " "))
+        ax.set_xlabel("path")
+    axes[0].set_ylabel(r"$\epsilon_M$ (%)")
+    axes[1].legend(frameon=False, fontsize=6, ncol=2)
+    fig.tight_layout()
+    _save_figure(fig, out / "fig2_composition_transform")
+    return result, summary
+
+
+def task4_tail(outdir):
+    """Generate the three-regime tail table and enforce the Cu floor gate."""
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    angles = np.geomspace(10.0, 300.0, 180)
+    rows = []
+    gates = []
+    for ff_model in SCAN_FF_MODELS:
+        rows.extend(tail_ratio_scan("Cu15", 6.0, ff_model, True, angles))
+    result = _ordered_columns(pd.DataFrame(rows))
+    result.to_csv(out / "tail_ratio_scan.csv", index=False)
+    for ff_model, group in result.groupby("ff_model"):
+        plateau = group[
+            (group.theta_mrad >= 1.2 * group.theta_nuc_mrad)
+            & (group.theta_mrad <= 1.4 * group.theta_nuc_mrad)
+        ]
+        measured = float(plateau.tail_ratio.median())
+        expected = float(plateau.expected_floor.iloc[0])
+        relative = abs(measured / expected - 1.0)
+        gates.append(
+            dict(
+                ff_model=ff_model,
+                floor=True,
+                path="Cu15",
+                p_GeV=6.0,
+                theta_cut_mrad=np.nan,
+                plateau_ratio=measured,
+                expected_floor=expected,
+                relative_difference=relative,
+                pass_gate=relative <= 0.20,
+            )
+        )
+    gate = _ordered_columns(pd.DataFrame(gates))
+    gate.to_csv(out / "tail_plateau_gate.csv", index=False)
+    fig, ax = plt.subplots(figsize=(5.4, 3.6))
+    for ff_model, group in result.groupby("ff_model"):
+        ax.plot(group.theta_mrad, group.tail_ratio, label=ff_model)
+    first = result.iloc[0]
+    ax.axvline(first.theta_FF_mrad, color="0.4", ls="--", label=r"$\theta_{FF}$")
+    ax.axvline(first.theta_nuc_mrad, color="0.4", ls=":", label=r"$\theta_{nuc}$")
+    ax.axhline(first.expected_floor, color="0.6", lw=0.8)
+    ax.set(xscale="log", yscale="log", xlabel=r"$\Theta$ (mrad)",
+           ylabel=r"$h(\Theta)\Theta^3/(2\chi_c^2)$")
+    ax.legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    _save_figure(fig, out / "three_regime_tail")
+    assert bool(gate.pass_gate.all()), "Task 4 incoherent-floor plateau gate failed"
+    return result, gate
+
+
+def transform_g1_closure(outdir, threshold_pp=0.05):
+    """Step A.4 gate: exact screened transform versus radial n<=2 Moliere."""
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for p in MOMENTA:
+        reference = constant_calibration(PATHS["AlCu"], p, THETA_CUT, nmax=2)
+        Fc, M2, M4 = transform_moments_g1(
+            reference["chi_c2"], reference["B"], THETA_CUT
+        )
+        epsilon = math.sqrt(M2) / reference["theta_space"] - 1.0
+        delta_pp = 100.0 * (epsilon - reference["epsilon"])
+        rows.append(
+            dict(
+                p_GeV=p,
+                theta_cut_mrad=1000.0 * THETA_CUT,
+                B=reference["B"],
+                epsilon_moliere_n2=reference["epsilon"],
+                epsilon_transform_g1=epsilon,
+                epsilon_difference_pp=delta_pp,
+                absolute_difference_pp=abs(delta_pp),
+                Fc_moliere_n2=reference["Fc"],
+                Fc_transform_g1=Fc,
+                M2_moliere_n2=reference["M2"],
+                M2_transform_g1=M2,
+                M4_transform_g1=M4,
+                threshold_pp=float(threshold_pp),
+                pass_gate=abs(delta_pp) < float(threshold_pp),
+            )
+        )
+    result = pd.DataFrame(rows)
+    result.to_csv(out / "transform_g1_closure.csv", index=False)
+    if not bool(result.pass_gate.all()):
+        raise RuntimeError(
+            "Step A.4 transform closure failed; finite-size regeneration is blocked"
+        )
+    return result
+
+
+def finite_size_transform_regeneration(outdir):
+    """Regenerate the Step A.5/B transform tables after enforcing A.4."""
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    closure = transform_g1_closure(out / "closure")
+    if not bool(closure.pass_gate.all()):
+        raise RuntimeError("A.4 closure did not pass")
+
+    paths = {
+        "Al25": (Layer("Al", 25.0),),
+        "Cu15": (Layer("Cu", 15.0),),
+        "AlCu": AXIAL_PATH,
+        "Pb15": (Layer("Pb", 15.0),),
+    }
+    cuts = (0.050, 0.100, 0.150, 0.200, 0.300)
+    rows = []
+    for path_name, path in paths.items():
+        for p in MOMENTA:
+            for cut in cuts:
+                point = calibrate_pofx_transform(
+                    path, p, cut, form_factor="none"
+                )
+                rows.append(dict(path=path_name, p_GeV=p, theta_cut_mrad=1000*cut, **{
+                    k: point[k] for k in (
+                        "form_factor", "include_incoherent", "Fc", "M2", "M4",
+                        "mu2", "epsilon_matched", "epsilon_mixed",
+                        "ratio2_matched", "ratio2_mixed", "R_matched", "R_mixed",
+                        "B", "eta_cut",
+                        "p_out", "dp_over_p",
+                    )
+                }))
+                for model in ("gaussian", "uniform_sphere"):
+                    for floor in (True, False):
+                        value = calibrate_pofx_transform(
+                            path,
+                            p,
+                            cut,
+                            form_factor=model,
+                            include_incoherent=floor,
+                        )
+                        rows.append(dict(path=path_name, p_GeV=p, theta_cut_mrad=1000*cut, **{
+                            k: value[k] for k in (
+                                "form_factor", "include_incoherent", "Fc", "M2", "M4",
+                                "mu2", "epsilon_matched", "epsilon_mixed",
+                                "ratio2_matched", "ratio2_mixed", "R_matched", "R_mixed",
+                                "B", "eta_cut",
+                                "p_out", "dp_over_p",
+                            )
+                        }))
+    result = pd.DataFrame(rows)
+    result["reduced_identity_error_matched"] = (
+        result.ratio2_matched - result.R_matched * result.B * result.mu2
+    )
+    result["reduced_identity_error_mixed"] = (
+        result.ratio2_mixed - result.R_mixed * result.B * result.mu2
+    )
+    result.to_csv(out / "finite_size_transform_scan.csv", index=False)
+
+    finite = result[result.form_factor != "none"].copy()
+    idx = ["path", "p_GeV", "theta_cut_mrad", "form_factor"]
+    inc = finite[finite.include_incoherent].set_index(idx)
+    omit = finite[~finite.include_incoherent].set_index(idx)
+    systematic = inc[["epsilon_matched", "epsilon_mixed"]].join(
+        omit[["epsilon_matched", "epsilon_mixed"]],
+        lsuffix="_with_floor",
+        rsuffix="_floor_omitted",
+    ).reset_index()
+    for mismatch in ("matched", "mixed"):
+        systematic[f"floor_systematic_{mismatch}_pp"] = 100.0 * (
+            systematic[f"epsilon_{mismatch}_with_floor"]
+            - systematic[f"epsilon_{mismatch}_floor_omitted"]
+        )
+    systematic.to_csv(out / "incoherent_floor_systematic.csv", index=False)
+
+    angle_rows = []
+    for cut in cuts:
+        angle_rows.append(dict(
+            theta_mrad=1000.0 * cut,
+            tan_over_theta=math.tan(cut) / cut,
+            tan_relative_error=math.tan(cut) / cut - 1.0,
+            exact_q_over_p_theta=2.0 * math.sin(0.5 * cut) / cut,
+            q_relative_difference=2.0 * math.sin(0.5 * cut) / cut - 1.0,
+            Cu_qR_over_hbarc_at_6GeV=(
+                6000.0 * cut * 1.2 * MATERIALS["Cu"].A ** (1.0 / 3.0) / 197.3
+            ),
+            transform_q_convention="q=p*theta",
+        ))
+    pd.DataFrame(angle_rows).to_csv(out / "small_angle_diagnostics.csv", index=False)
+    return result, systematic
+
+
+def finite_size_decision_gates(outdir):
+    """Evaluate the untruncated-RMS and efficiency-scan decision gates."""
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    gate_a_rows = []
+    gate_b_rows = []
+    cuts = np.linspace(0.050, 0.300, 101)
+    for p in MOMENTA:
+        for model in ("gaussian", "uniform_sphere"):
+            base = calibrate_pofx_transform(
+                AXIAL_PATH, p, THETA_CUT, form_factor=model
+            )
+            M2_inf, M4_inf = untruncated_finite_size_moments(
+                base["chi_c2"], base["B"], base["tail_components"], model
+            )
+            gate_a_rows.append(dict(
+                p_GeV=p,
+                form_factor=model,
+                theta_rms_over_theta_space=math.sqrt(M2_inf) / base["theta_space_pofx"],
+                epsilon_untruncated=math.sqrt(M2_inf) / base["theta_space_pofx"] - 1.0,
+                M2_untruncated=M2_inf,
+                M4_untruncated=M4_inf,
+                M4_over_M2_sq=M4_inf / M2_inf**2,
+                mechanism_gate=abs(math.sqrt(M2_inf) / base["theta_space_pofx"] - 1.0) < 0.01,
+            ))
+            for cut in cuts:
+                value = calibrate_pofx_transform(
+                    AXIAL_PATH, p, float(cut), form_factor=model
+                )
+                variance = value["M4"] - value["M2"] ** 2
+                efficiency = (
+                    math.sqrt(value["Fc"]) * value["M2"] / math.sqrt(variance)
+                    if variance > 0.0 else np.nan
+                )
+                gate_b_rows.append(dict(
+                    p_GeV=p,
+                    form_factor=model,
+                    theta_cut_mrad=1000.0 * cut,
+                    efficiency=efficiency,
+                    Fc=value["Fc"],
+                    M2=value["M2"],
+                    M4=value["M4"],
+                    M4_over_M2_sq=value["M4"] / value["M2"] ** 2,
+                    sigma_wQ=math.sqrt(max(value["M4"] / value["M2"] ** 2 - 1.0, 0.0)),
+                ))
+    gate_a = pd.DataFrame(gate_a_rows)
+    gate_b = pd.DataFrame(gate_b_rows)
+    gate_a.to_csv(out / "gate_a_untruncated_rms.csv", index=False)
+    gate_b.to_csv(out / "gate_b_efficiency_scan.csv", index=False)
+
+    opt_rows = []
+    for (p, model), group in gate_b.groupby(["p_GeV", "form_factor"], sort=False):
+        group = group.sort_values("theta_cut_mrad")
+        j = int(np.nanargmax(group.efficiency.to_numpy()))
+        row = group.iloc[j]
+        diff = np.diff(group.efficiency.to_numpy())
+        opt_rows.append(dict(
+            p_GeV=p,
+            form_factor=model,
+            theta_cut_opt_mrad=row.theta_cut_mrad,
+            efficiency_opt=row.efficiency,
+            interior_50_300=0 < j < len(group) - 1,
+            monotonic_50_300=bool(np.all(diff >= 0.0) or np.all(diff <= 0.0)),
+        ))
+    optimum = pd.DataFrame(opt_rows)
+    optimum.to_csv(out / "gate_b_optima.csv", index=False)
+
+    global_rows = []
+    global_cuts = np.geomspace(0.003, 0.300, 220)
+    for p in MOMENTA:
+        for model in ("gaussian", "uniform_sphere"):
+            values = [
+                calibrate_pofx_transform(AXIAL_PATH, p, float(c), form_factor=model)
+                for c in global_cuts
+            ]
+            efficiencies = np.asarray([
+                math.sqrt(v["Fc"])*v["M2"] / math.sqrt(v["M4"]-v["M2"]**2)
+                for v in values
+            ])
+            j = int(np.argmax(efficiencies))
+            global_rows.append(dict(
+                p_GeV=p, form_factor=model,
+                theta_cut_opt_mrad=1000.0*global_cuts[j],
+                efficiency_opt=efficiencies[j],
+                M4_over_M2_sq_at_opt=values[j]["M4"]/values[j]["M2"]**2,
+                interior_3_300=0 < j < len(global_cuts)-1,
+            ))
+    pd.DataFrame(global_rows).to_csv(out / "gate_b_global_optima.csv", index=False)
+
+    fig, axes = plt.subplots(1, 2, figsize=(9.0, 3.5))
+    styles = {"gaussian": "-", "uniform_sphere": "--"}
+    for (p, model), group in gate_b.groupby(["p_GeV", "form_factor"]):
+        label = f"{p:g} GeV/c, {model.replace('_', ' ')}"
+        axes[0].plot(group.theta_cut_mrad, group.efficiency, styles[model], label=label)
+        axes[1].plot(group.theta_cut_mrad, group.M4_over_M2_sq, styles[model], label=label)
+    axes[0].set(xlabel=r"$\theta_{\rm cut}$ (mrad)", ylabel=r"$\mathcal{E}$")
+    axes[1].set(xlabel=r"$\theta_{\rm cut}$ (mrad)", ylabel=r"$M_4/M_2^2$")
+    axes[1].axhline(2.0, color="0.6", lw=0.8)
+    axes[0].legend(frameon=False, fontsize=7, ncol=2)
+    fig.tight_layout()
+    _save_figure(fig, out / "decision_gate_efficiency")
+    return gate_a, gate_b, optimum
+
+
+def finite_size_analytic_completion(outdir):
+    """Composition, transform collapse, and three-regime tail deliverables."""
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "Al25": (Layer("Al", 25.0),),
+        "Cu15": (Layer("Cu", 15.0),),
+        "AlCu": AXIAL_PATH,
+        "Pb15": (Layer("Pb", 15.0),),
+    }
+    cuts = (0.050, 0.100, 0.150, 0.200, 0.300)
+    rows = []
+    for path_name, path in paths.items():
+        for p in MOMENTA:
+            for model in ("gaussian", "uniform_sphere"):
+                for cut in cuts:
+                    value = calibrate_pofx_transform(path, p, cut, form_factor=model)
+                    rows.append(dict(
+                        path=path_name, p_GeV=p, form_factor=model,
+                        theta_cut_mrad=1000.0 * cut,
+                        rho=finite_size_rho(value["chi_c2"], value["B"], value["tail_components"]),
+                        eta_cut=value["eta_cut"], mu2=value["mu2"],
+                        epsilon_matched=value["epsilon_matched"],
+                        epsilon_mixed=value["epsilon_mixed"], Fc=value["Fc"],
+                        M4_over_M2_sq=value["M4"] / value["M2"]**2,
+                    ))
+    composition = pd.DataFrame(rows)
+    composition.to_csv(out / "finite_size_composition.csv", index=False)
+
+    colors = {"Al25": "tab:blue", "Cu15": "tab:orange", "AlCu": "tab:green", "Pb15": "tab:red"}
+    markers = {1.0: "o", 2.0: "s", 3.5: "^", 6.0: "D"}
+    fig, axes = plt.subplots(1, 2, figsize=(9.0, 3.5), sharey=True)
+    for ax, model in zip(axes, ("gaussian", "uniform_sphere")):
+        q = composition[composition.form_factor == model]
+        for path_name in paths:
+            for p in MOMENTA:
+                g = q[(q.path == path_name) & (q.p_GeV == p)].sort_values("eta_cut")
+                ax.plot(g.eta_cut, 100.0*g.epsilon_matched, color=colors[path_name], alpha=0.5)
+                ax.scatter(g.eta_cut, 100.0*g.epsilon_matched, color=colors[path_name], marker=markers[p], s=16)
+        ax.set_xscale("log")
+        ax.set_xticks([2, 3, 5, 10, 20, 30])
+        ax.set_xticklabels(["2", "3", "5", "10", "20", "30"])
+        ax.xaxis.set_minor_formatter(NullFormatter())
+        ax.set_xlabel(r"$\eta_{\rm cut}$")
+        ax.set_title(model.replace("_", " "))
+    axes[0].set_ylabel(r"self-consistent $\epsilon_M$ (%)")
+    axes[1].legend(
+        handles=[plt.Line2D([], [], color=colors[k], label=k) for k in paths],
+        frameon=False, fontsize=8,
+    )
+    fig.tight_layout()
+    _save_figure(fig, out / "fig2_finite_size_composition")
+
+    eta_grid = np.geomspace(1.5, 35.0, 60)
+    collapse_rows = []
+    for p in MOMENTA:
+        for model in ("gaussian", "uniform_sphere"):
+            base = calibrate_pofx_transform(AXIAL_PATH, p, THETA_CUT, form_factor=model)
+            scale = math.sqrt(base["chi_c2"] * base["B"])
+            for eta in eta_grid:
+                value = calibrate_pofx_transform(AXIAL_PATH, p, float(eta*scale), form_factor=model)
+                collapse_rows.append(dict(
+                    p_GeV=p, form_factor=model, eta_cut=eta,
+                    rho=finite_size_rho(value["chi_c2"], value["B"], value["tail_components"]),
+                    epsilon_matched=value["epsilon_matched"], mu2=value["mu2"],
+                ))
+    collapse = pd.DataFrame(collapse_rows)
+    collapse.to_csv(out / "finite_size_collapse.csv", index=False)
+    summary_rows = []
+    beta_values = np.asarray([beta_of(p) for p in MOMENTA], float)
+    for model, q in collapse.groupby("form_factor"):
+        pivot = q.pivot(index="eta_cut", columns="p_GeV", values="epsilon_matched")
+        rho_by_p = q.groupby("p_GeV").rho.first()
+        summary_rows.append(dict(
+            form_factor=model, rho_mean=rho_by_p.mean(),
+            rho_peak_to_peak_fraction=(rho_by_p.max()-rho_by_p.min())/rho_by_p.mean(),
+            epsilon_max_peak_to_peak_pp=100.0*(pivot.max(axis=1)-pivot.min(axis=1)).max(),
+            beta_floor_fraction=(beta_values.max()-beta_values.min())/beta_values.mean(),
+        ))
+    collapse_summary = pd.DataFrame(summary_rows)
+    collapse_summary.to_csv(out / "finite_size_collapse_summary.csv", index=False)
+
+    fig, axes = plt.subplots(1, 2, figsize=(9.0, 3.5), sharey=True)
+    for ax, model in zip(axes, ("gaussian", "uniform_sphere")):
+        q = collapse[collapse.form_factor == model]
+        for p in MOMENTA:
+            g = q[q.p_GeV == p]
+            ax.plot(g.eta_cut, 100.0*g.epsilon_matched, label=f"{p:g} GeV/c")
+        ax.set_xscale("log")
+        ax.set_xticks([2, 3, 5, 10, 20, 30])
+        ax.set_xticklabels(["2", "3", "5", "10", "20", "30"])
+        ax.xaxis.set_minor_formatter(NullFormatter())
+        ax.set_xlabel(r"$\eta_{\rm cut}$")
+        ax.set_title(model.replace("_", " "))
+    axes[0].set_ylabel(r"self-consistent $\epsilon_M$ (%)")
+    axes[1].legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    _save_figure(fig, out / "fig1_transform_collapse")
+
+    theta = np.geomspace(0.010, 0.300, 180)
+    tail_rows = []
+    fig, axes = plt.subplots(1, 2, figsize=(9.0, 3.6), sharey=True)
+    colors_tail = {"gaussian": "tab:blue", "uniform_sphere": "tab:orange"}
+    for ax, p_tail in zip(axes, (1.0, 6.0)):
+        for model in ("gaussian", "uniform_sphere"):
+            value = calibrate_pofx_transform(AXIAL_PATH, p_tail, THETA_CUT, form_factor=model)
+            h = transform_radial_density(theta, value["chi_c2"], value["B"], value["tail_components"], model)
+            ratio = h * theta**3 / (2.0 * value["chi_c2"])
+            kernel = finite_size_kernel(theta, value["tail_components"], model)
+            for angle, density, rr, gg in zip(theta, h, ratio, kernel):
+                tail_rows.append(dict(
+                    p_GeV=p_tail, form_factor=model, theta_mrad=1000.0*angle,
+                    h=density, h_theta3_over_2chic2=rr, G=gg,
+                ))
+            ax.plot(1000.0*theta, ratio, color=colors_tail[model], label=model.replace("_", " "))
+            ax.plot(1000.0*theta, kernel, color=colors_tail[model], ls="--", alpha=0.75)
+        theta_ff = 1000.0 * math.exp(np.mean([
+            math.log(197.3/(1000.0*p_tail*1.2*MATERIALS[m].A**(1.0/3.0)))
+            for m in ("Al", "Cu")
+        ]))
+        theta_nuc = 1000.0 * 197.3 / (1000.0*p_tail*0.84)
+        ax.axvline(theta_ff, color="0.35", ls="--", lw=0.9)
+        ax.axvline(theta_nuc, color="0.35", ls=":", lw=0.9)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlabel(r"$\Theta$ (mrad)")
+        ax.set_title(f"{p_tail:g} GeV/c")
+    axes[0].set_ylabel(r"$h(\Theta)\Theta^3/(2\chi_c^2)$")
+    axes[0].legend(frameon=False, fontsize=8, title="solid: h ratio\ndashed: G")
+    fig.tight_layout()
+    _save_figure(fig, out / "three_regime_tail")
+    tail = pd.DataFrame(tail_rows)
+    tail.to_csv(out / "three_regime_tail.csv", index=False)
+    return composition, collapse, collapse_summary, tail
+
+
+def finite_size_sampler_validation(outdir, n_mc, seed, ff_model, floor):
+    """Enforce the accepted-angle M2 and one-sample KS production gates."""
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for i, p in enumerate(MOMENTA):
+        sampler = TransformSampler("AlCu", p, ff_model, floor, THETA_CUT)
+        rng = np.random.default_rng(np.random.SeedSequence([seed, i]))
+        sum2 = 0.0
+        sum4 = 0.0
+        ks_sample = []
+        remaining = int(n_mc)
+        while remaining:
+            n = min(1_000_000, remaining)
+            theta = sampler.sample(n, rng)
+            q = theta**2
+            sum2 += float(np.sum(q))
+            sum4 += float(np.sum(q*q))
+            if sum(map(len, ks_sample)) < 200_000:
+                ks_sample.append(theta[: min(n, 200_000 - sum(map(len, ks_sample)))])
+            remaining -= n
+        M2_mc = sum2 / n_mc
+        M4_mc = sum4 / n_mc
+        se = math.sqrt(max(M4_mc-M2_mc**2, 0.0)/n_mc)
+        relative = M2_mc/sampler.M2 - 1.0
+        ks = kstest(np.concatenate(ks_sample), sampler.cdf, method="asymp")
+        rows.append(dict(
+            ff_model=ff_model, floor=bool(floor), path="AlCu", p_GeV=p,
+            theta_cut_mrad=1000.0*THETA_CUT, n_mc=int(n_mc),
+            n_accepted=int(n_mc), accepted_only=True, Fc_transform=sampler.Fc,
+            M2_transform=sampler.M2, M2_mc=M2_mc,
+            M2_relative_difference=relative, M2_mc_se=se,
+            M2_z=(M2_mc-sampler.M2)/se,
+            ks_n=sum(map(len, ks_sample)), ks_statistic=ks.statistic,
+            ks_pvalue=ks.pvalue, pass_ks=ks.pvalue > 0.01,
+            target_relative=3.5e-4,
+            pass_3p5e4=abs(relative) <= 3.5e-4,
+        ))
+    result = _ordered_columns(pd.DataFrame(rows))
+    result.to_csv(out / "finite_size_sampler_validation.csv", index=False)
+    assert bool(result.pass_3p5e4.all()), "Task 5 M2 sampler gate failed"
+    assert bool(result.pass_ks.all()), "Task 5 KS sampler gate failed"
+    return result
+
+
+def geant4_finite_size_benchmark(outdir, rawdir="out/geant4/raw"):
+    """Compare existing Cu/Pb transport dumps with both finite-size kernels."""
+    from geant4_compare import load_angles, sample_moments
+
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    raw = Path(rawdir)
+    summary_rows = []
+    band_rows = []
+    slabs = (("Cu", 15.0), ("Pb", 8.0))
+    for material, thickness in slabs:
+        X = {m: 0.0 for m in MATERIALS}
+        X[material] = thickness * MATERIALS[material].rho
+        radius = 1.2 * MATERIALS[material].A ** (1.0/3.0)
+        for p in MOMENTA:
+            theta_ff = 197.3 / (1000.0*p*radius)
+            theta_nuc = 197.3 / (1000.0*p*0.84)
+            edges = sorted(set(
+                [0.0, 0.5*theta_ff, theta_ff, 2.0*theta_ff,
+                 0.5*theta_nuc, theta_nuc, 2.0*theta_nuc, 0.300]
+            ))
+            edges = [x for x in edges if 0.0 <= x <= 0.300]
+            if edges[-1] < 0.300:
+                edges.append(0.300)
+            pattern = f"{material}_t{thickness}_p{p}_*_s*.txt"
+            for file in sorted(raw.glob(pattern)):
+                name = file.stem
+                transport = "ftfp_bert_wvi" if "ftfp_bert_wvi" in name else "ftfp_bert"
+                angles = load_angles(file)
+                g4 = sample_moments(angles, 0.200, n_generated=1_000_000)
+                for model in ("gaussian", "uniform_sphere"):
+                    q200 = constant_calibration(X, p, 0.200, form_factor=model)
+                    summary_rows.append(dict(
+                        material=material, thickness_cm=thickness, p_GeV=p,
+                        transport=transport, form_factor=model,
+                        theta_FF_mrad=1000.0*theta_ff,
+                        theta_nuc_mrad=1000.0*theta_nuc,
+                        n_exit=len(angles), Fc_g4=g4["Fc"], Fc_model=q200["Fc"],
+                        theta_rms_g4=g4["theta_rms"], theta_rms_model=q200["theta_rms"],
+                        rms_model_over_g4_minus1=q200["theta_rms"]/g4["theta_rms"]-1.0,
+                        quadratic_weight_bias_if_g4_true=(g4["theta_rms"]/q200["theta_rms"])**2-1.0,
+                    ))
+                    cumulative = {}
+                    for edge in edges:
+                        if edge == 0.0:
+                            cumulative[edge] = (0.0, 0.0)
+                        else:
+                            q = constant_calibration(X, p, edge, form_factor=model)
+                            cumulative[edge] = (q["Fc"], q["Fc"]*q["M2"])
+                    for lo, hi in zip(edges[:-1], edges[1:]):
+                        mask = (angles >= lo) & (angles < hi)
+                        Fc_lo, n2_lo = cumulative[lo]
+                        Fc_hi, n2_hi = cumulative[hi]
+                        band_rows.append(dict(
+                            material=material, thickness_cm=thickness, p_GeV=p,
+                            transport=transport, form_factor=model,
+                            theta_lo_mrad=1000.0*lo, theta_hi_mrad=1000.0*hi,
+                            straddles_theta_FF=lo <= theta_ff <= hi,
+                            straddles_theta_nuc=lo <= theta_nuc <= hi,
+                            probability_g4=float(mask.sum()/1_000_000),
+                            probability_model=Fc_hi-Fc_lo,
+                            M2_numerator_g4=float(np.sum(angles[mask]**2)/1_000_000),
+                            M2_numerator_model=n2_hi-n2_lo,
+                        ))
+    summary = pd.DataFrame(summary_rows)
+    bands = pd.DataFrame(band_rows)
+    summary.to_csv(out / "geant4_finite_size_benchmark.csv", index=False)
+    bands.to_csv(out / "geant4_finite_size_bands.csv", index=False)
+    return summary, bands
 
 
 def _save_figure(fig, path):
@@ -222,7 +981,7 @@ def _central_artifact(df, cache, theta_cut=THETA_CUT, min_count=MIN_VOX_COUNT):
     )
 
 
-def cache_sensitivity(outdir, n_events=500_000, seed=0):
+def cache_sensitivity(outdir, n_events=500_000, seed=0, form_factor="none"):
     """Common-random-number coarse/fine cache comparison at 1 GeV/c."""
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
@@ -240,7 +999,7 @@ def cache_sensitivity(outdir, n_events=500_000, seed=0):
     }
     rows = []
     for label, kwargs in settings.items():
-        cache = PofxCache(nmax=2, **kwargs)
+        cache = PofxCache(nmax=2, form_factor=form_factor, **kwargs)
         df = simulate_fixed_node(
             1.0,
             int(n_events),
@@ -261,6 +1020,7 @@ def cache_sensitivity(outdir, n_events=500_000, seed=0):
                 p_step=cache.p_step,
                 segment_step=cache.segment_step,
                 cut_step=cache.cut_step,
+                form_factor=form_factor,
                 **art,
             )
         )
@@ -608,12 +1368,39 @@ def main():
     p = sub.add_parser("quadrature")
     p.add_argument("--out", default="out/validation/quadrature")
     p.add_argument("--n-mc", type=int, default=10_000_000)
+    p = sub.add_parser("transform-g1")
+    p.add_argument("--out", default="out/validation/transform_g1")
+    p.add_argument("--threshold-pp", type=float, default=0.05)
+    p = sub.add_parser("finite-size-transform")
+    p.add_argument("--out", default="out/validation/finite_size_transform")
+    p = sub.add_parser("decision-gates")
+    p.add_argument("--out", default="out/validation/decision_gates")
+    p = sub.add_parser("analytic-completion")
+    p.add_argument("--out", default="out/validation/analytic_completion")
+    p = sub.add_parser("finite-size-sampler")
+    p.add_argument("--out", default="out/validation/finite_size_sampler")
+    p.add_argument("--n-mc", type=int, default=50_000_000)
+    p.add_argument("--seed", type=int, default=20260826)
+    p.add_argument("--ff-model", choices=("point", "gauss", "sphere"), required=True)
+    p.add_argument("--floor", choices=("on", "off"), required=True)
+    p = sub.add_parser("task1")
+    p.add_argument("--out", default="out/validation/task1")
+    p = sub.add_parser("task2")
+    p.add_argument("--out", default="out/validation/task2")
+    p = sub.add_parser("task3")
+    p.add_argument("--out", default="out/validation/task3")
+    p = sub.add_parser("task4")
+    p.add_argument("--out", default="out/validation/task4")
+    p = sub.add_parser("geant4-finite")
+    p.add_argument("--out", default="out/validation/geant4_finite")
+    p.add_argument("--rawdir", default="out/geant4/raw")
     p = sub.add_parser("raw-mc")
     p.add_argument("--out", default="out/validation/raw_mc")
     p.add_argument("--n-mc", type=int, default=2_000_000)
     p = sub.add_parser("cache")
     p.add_argument("--out", default="out/validation/cache")
     p.add_argument("--n-events", type=int, default=500_000)
+    p.add_argument("--form-factor", choices=("none", "gaussian", "uniform_sphere"), default="none")
     p = sub.add_parser("cut-sweep")
     p.add_argument("events", nargs="+")
     p.add_argument("--out", default="out/validation/cuts")
@@ -631,14 +1418,51 @@ def main():
     p = sub.add_parser("kink-composition")
     p.add_argument("--out", default="out/validation/kink_composition")
     p.add_argument("--n-events", type=int, default=200_000)
-    p.add_argument("--form-factor", choices=("none", "gaussian", "uniform_sphere"), default="gaussian")
+    p.add_argument("--form-factor", choices=("none", "gaussian", "uniform_sphere"), default="none")
     a = ap.parse_args()
     if a.cmd == "quadrature":
         print(quadrature_validation(a.out, n_mc=a.n_mc).to_string(index=False))
+    elif a.cmd == "transform-g1":
+        print(
+            transform_g1_closure(a.out, threshold_pp=a.threshold_pp).to_string(
+                index=False
+            )
+        )
+    elif a.cmd == "finite-size-transform":
+        result, systematic = finite_size_transform_regeneration(a.out)
+        print(result.to_string(index=False))
+        print("\nIncoherent-floor systematic:\n", systematic.to_string(index=False))
+    elif a.cmd == "decision-gates":
+        gate_a, _, optimum = finite_size_decision_gates(a.out)
+        print("Gate A:\n", gate_a.to_string(index=False))
+        print("\nGate B optima:\n", optimum.to_string(index=False))
+    elif a.cmd == "analytic-completion":
+        _, _, summary, _ = finite_size_analytic_completion(a.out)
+        print(summary.to_string(index=False))
+    elif a.cmd == "finite-size-sampler":
+        print(
+            finite_size_sampler_validation(
+                a.out, a.n_mc, a.seed, a.ff_model, a.floor == "on"
+            ).to_string(index=False)
+        )
+    elif a.cmd == "task1":
+        print(task1_untruncated_rms(a.out).to_string(index=False))
+    elif a.cmd == "task2":
+        _, optimum = task2_efficiency(a.out)
+        print(optimum.to_string(index=False))
+    elif a.cmd == "task3":
+        _, summary = task3_composition(a.out)
+        print(summary.to_string(index=False))
+    elif a.cmd == "task4":
+        _, gate = task4_tail(a.out)
+        print(gate.to_string(index=False))
+    elif a.cmd == "geant4-finite":
+        summary, _ = geant4_finite_size_benchmark(a.out, rawdir=a.rawdir)
+        print(summary.to_string(index=False))
     elif a.cmd == "raw-mc":
         print(raw_sampler_overlay(a.out, n_mc=a.n_mc).to_string(index=False))
     elif a.cmd == "cache":
-        _, c = cache_sensitivity(a.out, n_events=a.n_events)
+        _, c = cache_sensitivity(a.out, n_events=a.n_events, form_factor=a.form_factor)
         print(c.to_string(index=False))
     elif a.cmd == "cut-sweep":
         _, s = cut_sweep(a.events, a.out)

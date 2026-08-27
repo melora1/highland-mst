@@ -30,7 +30,6 @@ from config import (
     VOX_SIZE,
 )
 from physics import (
-    FORM_FACTOR_THETA_MATCH,
     HBARC_MEV_FM,
     Layer,
     PofxCache,
@@ -123,13 +122,12 @@ def run_theory(outdir):
     collapse = pd.DataFrame(rows)
     collapse.to_csv(out / "theory_collapse.csv", index=False)
 
-    # Finite-nuclear-size sensitivity.  The coherent tail is multiplied by
-    # either requested form factor, while (1+Z|F|^2)/(Z+1) retains the explicit
-    # incoherent floor.  The no-FF column is the unspliced Moliere reference.
+    # Finite-nuclear-size sensitivity from the unspliced characteristic
+    # transform.  The no-FF column remains the n<=2 Moliere reference used by
+    # the detector sampler; the A.4 gate independently closes it to G=1.
     ff_rows = []
     scan_rows = []
     onset_rows = []
-    continuity_rows = []
     for path_name, X in PATHS.items():
         for p in MOMENTA:
             values = {
@@ -149,22 +147,6 @@ def run_theory(outdir):
                         values["gaussian"]["epsilon"]
                         - values["uniform_sphere"]["epsilon"]
                     ),
-                )
-            )
-            continuity = radial_tail_ratio(
-                FORM_FACTOR_THETA_MATCH,
-                values["none"]["chi_c2"],
-                values["none"]["B"],
-                nmax=2,
-            )
-            continuity_rows.append(
-                dict(
-                    path=path_name,
-                    p_GeV=p,
-                    theta_match_mrad=1000 * FORM_FACTOR_THETA_MATCH,
-                    hM_over_hR=continuity,
-                    relative_discontinuity=abs(continuity - 1.0),
-                    pass_10pct=abs(continuity - 1.0) < 0.10,
                 )
             )
             for material in (name for name in MATERIALS if X.get(name, 0.0) > 0.0):
@@ -198,7 +180,6 @@ def run_theory(outdir):
     pd.DataFrame(onset_rows).drop_duplicates(
         ["material", "p_GeV"]
     ).to_csv(out / "form_factor_onset.csv", index=False)
-    pd.DataFrame(continuity_rows).to_csv(out / "form_factor_continuity.csv", index=False)
 
     # Fixed-path momentum-invariance summary.  R and B vary at the 1e-3 level
     # individually but anticorrelate, leaving RB substantially more invariant.
@@ -229,7 +210,14 @@ def run_theory(outdir):
         ("Al25", OFFCU_ORDERED),
     ):
         for p in MOMENTA:
-            rd = calibrate_pofx(path, p, THETA_CUT, nmax=2, screening_weight="dchi_c2")
+            rd = calibrate_pofx(
+                path,
+                p,
+                THETA_CUT,
+                nmax=2,
+                screening_weight="dchi_c2",
+                form_factor="gaussian",
+            )
             ru = calibrate_pofx(
                 path,
                 p,
@@ -246,7 +234,14 @@ def run_theory(outdir):
                 screening_weight="dchi_c2",
                 form_factor="none",
             )
-            rs = calibrate_pofx(path, p, THETA_CUT, nmax=2, screening_weight="serial")
+            rs = calibrate_pofx(
+                path,
+                p,
+                THETA_CUT,
+                nmax=2,
+                screening_weight="serial",
+                form_factor="gaussian",
+            )
             rows.append(
                 dict(
                     path=label,
@@ -1154,7 +1149,6 @@ def analyze_events(
                 ),
                 screening_weight=cache.screening_weight,
                 form_factor=getattr(cache, "form_factor", "none"),
-                theta_match_mrad=1000.0 * getattr(cache, "theta_match", 0.100),
                 max_clipped=cache.max_clipped,
                 local_kink_fallbacks=getattr(cache, "local_kink_fallbacks", 0),
                 n_kinks=int(use.n_kinks.iloc[0]) if "n_kinks" in use else 1,

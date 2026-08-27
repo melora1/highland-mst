@@ -46,7 +46,7 @@ def main():
     p.add_argument("--out", default="out/equal")
     p.add_argument("--theta-cut", type=float, default=THETA_CUT)
     p.add_argument("--n-kinks", type=int, default=1)
-    p.add_argument("--form-factor", choices=FORM_FACTOR_MODELS, default="gaussian")
+    p.add_argument("--form-factor", choices=FORM_FACTOR_MODELS, default="none")
     p.add_argument("--p-cache-step", type=float, default=P_CACHE_STEP)
     p.add_argument("--segment-cache-step", type=float, default=SEG_CACHE_STEP)
     p.add_argument("--cut-cache-step", type=float, default=CUT_CACHE_STEP)
@@ -57,7 +57,7 @@ def main():
     p.add_argument("--out", default="out/gradient")
     p.add_argument("--theta-cut", type=float, default=THETA_CUT)
     p.add_argument("--n-kinks", type=int, default=1)
-    p.add_argument("--form-factor", choices=FORM_FACTOR_MODELS, default="gaussian")
+    p.add_argument("--form-factor", choices=FORM_FACTOR_MODELS, default="none")
 
     p = sub.add_parser("analyze")
     p.add_argument("file")
@@ -65,7 +65,7 @@ def main():
     p.add_argument("--gradient", action="store_true")
     p.add_argument("--theta-cut", type=float, default=THETA_CUT)
     p.add_argument("--min-count", type=int, default=MIN_VOX_COUNT)
-    p.add_argument("--form-factor", choices=FORM_FACTOR_MODELS, default="gaussian")
+    p.add_argument("--form-factor", choices=FORM_FACTOR_MODELS, default="none")
 
     p = sub.add_parser("postprocess")
     p.add_argument("outdirs", nargs="+", help="existing result directories containing images.npz")
@@ -85,7 +85,7 @@ def main():
     p.add_argument("--out", default="out")
     p.add_argument("--theta-cut", type=float, default=THETA_CUT)
     p.add_argument("--n-kinks", type=int, default=1)
-    p.add_argument("--form-factor", choices=FORM_FACTOR_MODELS, default="gaussian")
+    p.add_argument("--form-factor", choices=FORM_FACTOR_MODELS, default="none")
 
     a = ap.parse_args()
     if a.cmd == "theory":

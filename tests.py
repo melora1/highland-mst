@@ -36,20 +36,25 @@ from physics import (
     dimensionless_moments_quad,
     energy_after,
     fit_log_asymptote,
+    finite_size_kernel,
+    composition_scan,
+    efficiency_scan,
     layers_from_segment_thicknesses,
     nuclear_form_factor_sq,
     nuclear_radius_fm,
     phi0,
     phi1,
+    proton_form_factor_sq,
     radial_moments,
     radial_tail_ratio,
     radial_total_mass,
     reduced_parameters,
     split_path_equal_dchi_c2,
-    tail_suppression,
     theta0_highland,
+    transform_moments_g1,
     validate_stopping_minima,
 )
+from sampling import TransformSampler
 from simulation import (
     momentum_fractions,
     nominal_target_offset_cm,
@@ -190,20 +195,38 @@ def radial_normalization_clipping_and_absolute_tail():
 
 
 @test
-def finite_form_factor_onset_floor_and_splice_are_explicit():
+def finite_form_factor_is_inside_transform_and_normalized():
     cu = MATERIALS["Cu"]
     radius = nuclear_radius_fm(cu.A)
     onset_mrad = 197.3 / (6000.0 * radius) * 1000.0
     assert abs(onset_mrad - 6.87) < 0.02
     component = ((1.0, cu.Z, cu.A, 6.0),)
-    assert abs(float(tail_suppression(1e3, component, "gaussian")) - 1.0 / (cu.Z + 1.0)) < 1e-12
+    assert float(finite_size_kernel(0.0, component, "gaussian")) == 1.0
+    # Between loss of nuclear coherence and proton suppression, the kernel is
+    # close to the requested A/[Z(Z+1)] nucleon floor.
+    theta = 0.040
+    expected_floor = cu.A / (cu.Z * (cu.Z + 1.0))
+    got = float(finite_size_kernel(theta, component, "gaussian"))
+    expected = expected_floor * float(proton_form_factor_sq(theta, 6.0))
+    assert abs(got / expected - 1.0) < 0.03, (got, expected)
     assert float(nuclear_form_factor_sq(0.0, 6.0, cu.A, "uniform_sphere")) == 1.0
     point = constant_calibration(PATHS["AlCu"], 6.0, form_factor="none")
     gauss = constant_calibration(PATHS["AlCu"], 6.0, form_factor="gaussian")
     sphere = constant_calibration(PATHS["AlCu"], 6.0, form_factor="uniform_sphere")
-    assert abs(gauss["continuity_ratio"] - 1.0) < 0.10
     assert gauss["M2"] < point["M2"] and sphere["M2"] < point["M2"]
     assert abs(gauss["epsilon"] - sphere["epsilon"]) > 0.0
+
+
+@test
+def exact_transform_g1_closes_against_moliere_n2():
+    for p in MOMENTA:
+        reference = constant_calibration(PATHS["AlCu"], p, THETA_CUT, nmax=2)
+        Fc, M2, M4 = transform_moments_g1(
+            reference["chi_c2"], reference["B"], THETA_CUT
+        )
+        epsilon = math.sqrt(M2) / reference["theta_space"] - 1.0
+        assert 100.0 * abs(epsilon - reference["epsilon"]) < 0.05, (p, epsilon)
+        assert 0.0 < Fc <= 1.0 and M2 > 0.0 and M4 > M2 * M2
 
 
 @test
@@ -306,20 +329,48 @@ def sampler_matches_quadrature_and_is_isotropic():
 
 
 @test
-def composed_form_factor_kinks_match_whole_path_moment():
-    n = 40_000
-    rng = np.random.default_rng(20260825)
-    cache = PofxCache(nmax=2, form_factor="gaussian")
-    p = np.full(n, 2.0)
-    seg0 = np.array([5.0, 15.0, 0.0, 0.0, 5.0])
-    seg = np.tile(seg0, (n, 1))
-    tx, ty, _ = cache.sample_kinks(p, seg, rng, n_kinks=5)
-    theta = np.hypot(tx.sum(axis=1), ty.sum(axis=1))
-    keep = theta <= THETA_CUT
-    q = theta[keep] ** 2
-    r = cache.calibration(2.0, seg0, THETA_CUT)
-    se = math.sqrt(max(r["M4"] - r["M2"] ** 2, 0.0) / q.size)
-    assert abs(float(q.mean()) - r["M2"]) < 6 * se + 0.005 * r["M2"]
+def finite_size_sampler_matches_transform_moments():
+    class StratifiedRng:
+        def random(self, n):
+            return (np.arange(n, dtype=float) + 0.5) / n
+
+    sampler = TransformSampler("AlCu", 2.0, "gauss", True, THETA_CUT)
+    theta = sampler.sample(1_000_000, StratifiedRng())
+    assert np.all(theta <= THETA_CUT)
+    assert abs(float(np.mean(theta**2)) / sampler.M2 - 1.0) <= 3.5e-4
+
+
+@test
+def test_G_at_zero():
+    cu = MATERIALS["Cu"]
+    components = ((1.0, cu.Z, cu.A, 6.0),)
+    for ff_model in ("gaussian", "uniform_sphere"):
+        assert abs(float(finite_size_kernel(0.0, components, ff_model, True)) - 1.0) < 1e-12
+
+
+@test
+def test_M4_point_nucleus():
+    one = efficiency_scan("AlCu", 1.0, "point", False, [200.0])[0]
+    six = efficiency_scan("AlCu", 6.0, "point", False, [200.0])[0]
+    assert abs(one["M4_over_M2_sq"] / 1.99 - 1.0) < 0.01
+    assert abs(six["M4_over_M2_sq"] / 11.05 - 1.0) < 0.01
+
+
+@test
+def test_rho_momentum_invariance():
+    rows = composition_scan(["AlCu"], MOMENTA, [200.0], "gauss", True)
+    values = np.asarray([row["rho"] for row in rows])
+    assert (values.max() - values.min()) / values.mean() <= 0.006
+
+
+@test
+def test_floor_plateau():
+    from physics import tail_ratio_scan
+
+    rows = tail_ratio_scan("Cu15", 6.0, "gauss", True, np.geomspace(47.0, 55.0, 25))
+    measured = float(np.median([row["tail_ratio"] for row in rows]))
+    expected = rows[0]["expected_floor"]
+    assert abs(measured / expected - 1.0) <= 0.20
 
 
 @test

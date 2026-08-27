@@ -103,3 +103,8 @@ RADIAL_TABLE_ETA_MAX = 30.0
 SEED_BASE = 20260713
 SPLIT_SEED = 20260819
 OUT_DIR = "out"
+
+# Finite-size detector production is intentionally fail-closed.  Set this one
+# named flag only after the 5e7-event M2 and KS gates have both passed for the
+# transform-derived accepted-angle sampler.
+FINITE_SIZE_PRODUCTION_ENABLED = False
