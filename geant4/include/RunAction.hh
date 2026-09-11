@@ -16,7 +16,7 @@ class RunAction : public G4UserRunAction {
   void BeginOfRunAction(const G4Run* run) override;
   void EndOfRunAction(const G4Run* run) override;
 
-  void WriteTheta(G4double thetaRad);
+  void WriteAngles(G4double thetaRad, G4double thetaXRad, G4double thetaYRad);
 
  private:
   G4String fOutFileName;

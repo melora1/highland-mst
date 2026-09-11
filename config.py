@@ -104,7 +104,7 @@ SEED_BASE = 20260713
 SPLIT_SEED = 20260819
 OUT_DIR = "out"
 
-# Finite-size detector production is intentionally fail-closed.  Set this one
-# named flag only after the 5e7-event M2 and KS gates have both passed for the
-# transform-derived accepted-angle sampler.
-FINITE_SIZE_PRODUCTION_ENABLED = False
+# Enabled after all Gaussian/sphere, floor-on/off reduced caches passed the
+# empirical N=5/N=25 support, off-node M2, no-extrapolation, and performance
+# gates.  Keep this named flag greppable so production readiness is explicit.
+FINITE_SIZE_PRODUCTION_ENABLED = True

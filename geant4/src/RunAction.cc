@@ -34,7 +34,10 @@ void RunAction::EndOfRunAction(const G4Run* run) {
   std::cout << std::endl;
 }
 
-void RunAction::WriteTheta(G4double thetaRad) {
-  fOut << thetaRad << "\n";
+void RunAction::WriteAngles(G4double thetaRad, G4double thetaXRad,
+                            G4double thetaYRad) {
+  // The first column remains theta_space for backward compatibility.  Signed
+  // projected angles enable the central Lynch-Dahl 98%-fraction fit.
+  fOut << thetaRad << " " << thetaXRad << " " << thetaYRad << "\n";
   ++fNWritten;
 }

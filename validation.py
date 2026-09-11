@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import math
 import re
+import time
 from pathlib import Path
 
 import matplotlib
@@ -37,6 +38,7 @@ from config import (
     THETA_CUT,
 )
 from physics import (
+    HBARC_MEV_FM,
     Layer,
     PofxCache,
     beta_of,
@@ -50,10 +52,13 @@ from physics import (
     finite_size_eta_from_uniform,
     finite_size_kernel,
     mu2_eta,
+    nuclear_radius_fm,
     radial_eta_from_uniform,
     reduced_parameters,
     _rms_untruncated_diagnostics,
+    _constant_transform_calibration,
     tail_ratio_scan,
+    transform_moments_finite_size,
     transform_moments_g1,
     transform_radial_density,
     untruncated_finite_size_moments,
@@ -169,64 +174,55 @@ def task3_composition(outdir):
             )
     result = _ordered_columns(pd.DataFrame(rows))
     result.to_csv(out / "composition_scan.csv", index=False)
-    rho = result[
+    rho_rows = result[
         (result.path == "AlCu")
-        & (result.p_GeV == 1.0)
         & (result.ff_model == "gauss")
         & result.floor
         & (result.theta_cut_mrad == 200.0)
-    ].iloc[0].rho
-    summary = pd.DataFrame(
-        [
-            dict(
-                ff_model="gauss",
-                floor=True,
-                path="AlCu",
-                p_GeV=1.0,
-                theta_cut_mrad=200.0,
-                rho_weighted=rho,
-                rho_manuscript=0.562,
-                relative_difference=rho / 0.562 - 1.0,
-                manuscript_update_needed=abs(rho / 0.562 - 1.0) > 0.01,
-            )
-        ]
-    )
+    ].sort_values("p_GeV")
+    old_rho = dict(zip(MOMENTA, (0.5588, 0.5612, 0.5616, 0.5618)))
+    rho_spread = (rho_rows.rho.max() - rho_rows.rho.min()) / rho_rows.rho.mean()
+    summary = pd.DataFrame([
+        dict(
+            ff_model="gauss", floor=True, path="AlCu", p_GeV=row.p_GeV,
+            theta_cut_mrad=200.0, rho_weighted=row.rho,
+            rho_manuscript=old_rho[row.p_GeV],
+            relative_difference=row.rho / old_rho[row.p_GeV] - 1.0,
+            rho_peak_to_peak_fraction=rho_spread,
+            pass_momentum_invariance=rho_spread <= 0.006,
+            manuscript_update_needed=(
+                abs(row.rho / old_rho[row.p_GeV] - 1.0) > 0.01
+            ),
+        )
+        for row in rho_rows.itertuples()
+    ])
     summary = _ordered_columns(summary)
     summary.to_csv(out / "rho_check.csv", index=False)
 
     matched_rows = []
     for ff_model, internal in (("gauss", "gaussian"), ("sphere", "uniform_sphere")):
         for p_GeV in MOMENTA:
-            reference = calibrate_pofx_transform(
-                AXIAL_PATH, p_GeV, THETA_CUT,
-                form_factor=internal, include_incoherent=True,
+            reference = _constant_transform_calibration(
+                PATHS["AlCu"], p_GeV, THETA_CUT, internal, True,
             )
-            k_ref = THETA_CUT / (reference["theta_space_pofx"] / math.sqrt(2.0))
+            k_ref = THETA_CUT / (reference["theta_space"] / math.sqrt(2.0))
             eta_ref = reference["eta_cut"]
             for path in SCAN_PATHS:
-                ordered = {
-                    "Al25": (Layer("Al", 25.0),),
-                    "Cu15": (Layer("Cu", 15.0),),
-                    "AlCu": AXIAL_PATH,
-                    "Pb15": (Layer("Pb", 15.0),),
-                }[path]
-                base = calibrate_pofx_transform(
-                    ordered, p_GeV, THETA_CUT,
-                    form_factor=internal, include_incoherent=True,
+                base = _constant_transform_calibration(
+                    PATHS[path], p_GeV, THETA_CUT, internal, True,
                 )
                 cuts = {
-                    "matched_k": k_ref * base["theta_space_pofx"] / math.sqrt(2.0),
+                    "matched_k": k_ref * base["theta_space"] / math.sqrt(2.0),
                     "matched_eta_cut": eta_ref * math.sqrt(base["chi_c2"] * base["B"]),
                 }
                 for matching, cut in cuts.items():
-                    q = calibrate_pofx_transform(
-                        ordered, p_GeV, cut,
-                        form_factor=internal, include_incoherent=True,
+                    q = _constant_transform_calibration(
+                        PATHS[path], p_GeV, cut, internal, True,
                     )
                     matched_rows.append(dict(
                         ff_model=ff_model, floor=True, path=path, p_GeV=p_GeV,
                         theta_cut_mrad=1000.0*cut, matching=matching,
-                        eps_M=q["epsilon_matched"], k_reference=k_ref,
+                        eps_M=q["epsilon"], k_reference=k_ref,
                         eta_cut_reference=eta_ref,
                     ))
     matched = _ordered_columns(pd.DataFrame(matched_rows))
@@ -272,6 +268,104 @@ def task3_composition(outdir):
     axes[1].legend(frameon=False, fontsize=6, ncol=2)
     fig.tight_layout()
     _save_figure(fig, out / "fig2_composition_transform")
+
+    # Fig. 1: finite-size constant-p collapse and a transform-sampler overlay.
+    eta_grid = np.geomspace(2.0, 30.0, 57)
+    collapse_rows = []
+    for ff_model, internal in (("gauss", "gaussian"), ("sphere", "uniform_sphere")):
+        for p_GeV in MOMENTA:
+            base = _constant_transform_calibration(
+                PATHS["AlCu"], p_GeV, THETA_CUT, internal, True,
+            )
+            theta_ff = finite_size_rho(
+                base["chi_c2"], base["B"], base["tail_components"]
+            ) * math.sqrt(base["chi_c2"] * base["B"])
+            rho = theta_ff / math.sqrt(base["chi_c2"] * base["B"])
+            for eta in eta_grid:
+                cut = eta * math.sqrt(base["chi_c2"] * base["B"])
+                q = _constant_transform_calibration(
+                    PATHS["AlCu"], p_GeV, cut, internal, True,
+                )
+                collapse_rows.append(dict(
+                    ff_model=ff_model, floor=True, path="AlCu", p_GeV=p_GeV,
+                    theta_cut_mrad=1000.0*cut, eta_cut=eta, rho=rho,
+                    mu2=q["mu2"], eps_M=q["epsilon"],
+                ))
+    collapse = _ordered_columns(pd.DataFrame(collapse_rows))
+    collapse.to_csv(out / "fig1_transform_collapse.csv", index=False)
+
+    collapse_summary_rows = []
+    for ff_model, group in collapse.groupby("ff_model"):
+        pivot = group.pivot(index="eta_cut", columns="p_GeV", values="eps_M")
+        rho_values = group.groupby("p_GeV").rho.first()
+        rho_scatter = (rho_values.max() - rho_values.min()) / rho_values.mean()
+        collapse_summary_rows.append(dict(
+            ff_model=ff_model, floor=True, path="AlCu", p_GeV=np.nan,
+            theta_cut_mrad=np.nan,
+            rho_peak_to_peak_fraction=rho_scatter,
+            predicted_beta_floor_fraction=0.006,
+            epsilon_max_peak_to_peak_pp=(
+                100.0*(pivot.max(axis=1)-pivot.min(axis=1)).max()
+            ),
+            pass_0p6pct_floor=rho_scatter <= 0.006,
+        ))
+    collapse_summary = _ordered_columns(pd.DataFrame(collapse_summary_rows))
+    collapse_summary.to_csv(out / "fig1_collapse_summary.csv", index=False)
+    assert bool(collapse_summary.pass_0p6pct_floor.all()), (
+        "Fig. 1 rho scatter exceeds the analytic 0.6% floor"
+    )
+
+    mc_rows = []
+    for j, ff_model in enumerate(SCAN_FF_MODELS):
+        for i, p_GeV in enumerate(MOMENTA):
+            sampler = TransformSampler(
+                PATHS["AlCu"], p_GeV, ff_model, True, THETA_CUT
+            )
+            rng = np.random.default_rng(
+                np.random.SeedSequence([20260828, j, i])
+            )
+            theta = sampler.sample(2_000_000, rng)
+            M2_mc = float(np.mean(theta**2))
+            analytic = composition_scan(
+                ["AlCu"], [p_GeV], [200.0], ff_model, True
+            )[0]
+            eps_mc = math.sqrt(M2_mc) / analytic["theta_space"] - 1.0
+            mc_rows.append(dict(
+                ff_model=ff_model, floor=True, path="AlCu", p_GeV=p_GeV,
+                theta_cut_mrad=200.0, eta_cut=analytic["eta_cut"],
+                n_accepted=2_000_000, eps_M_mc=eps_mc,
+                eps_M_analytic=analytic["eps_M"],
+                relative_M2_difference=M2_mc/sampler.M2-1.0,
+            ))
+    mc = _ordered_columns(pd.DataFrame(mc_rows))
+    mc.to_csv(out / "fig1_transform_sampler_overlay.csv", index=False)
+
+    fig, axes = plt.subplots(1, 2, figsize=(9.0, 3.5))
+    styles = {"gauss": "-", "sphere": "--"}
+    colors_p = dict(zip(MOMENTA, ("tab:blue", "tab:orange", "tab:green", "tab:red")))
+    for ff_model in SCAN_FF_MODELS:
+        q_model = collapse[collapse.ff_model == ff_model]
+        ref = q_model[q_model.p_GeV == 6.0].set_index("eta_cut").eps_M
+        for p_GeV in MOMENTA:
+            q = q_model[q_model.p_GeV == p_GeV]
+            label = f"{ff_model}, {p_GeV:g} GeV/c"
+            axes[0].plot(q.eta_cut, 100.0*q.eps_M, styles[ff_model],
+                         color=colors_p[p_GeV], label=label)
+            axes[1].plot(q.eta_cut, 100.0*(q.eps_M.to_numpy()-ref.to_numpy()),
+                         styles[ff_model], color=colors_p[p_GeV])
+        points = mc[mc.ff_model == ff_model]
+        axes[0].scatter(points.eta_cut, 100.0*points.eps_M_mc,
+                        marker="o" if ff_model == "gauss" else "s",
+                        facecolors="none", edgecolors="k", s=22, zorder=4)
+    for ax in axes:
+        ax.set_xscale("log")
+        ax.set_xlabel(r"$\eta_{\rm cut}$")
+    axes[0].set_ylabel(r"$\epsilon_M$ (%)")
+    axes[1].set_ylabel(r"residual from 6 GeV/c curve (pp)")
+    axes[1].axhline(0.0, color="0.6", lw=0.8)
+    axes[0].legend(frameon=False, fontsize=6, ncol=2)
+    fig.tight_layout()
+    _save_figure(fig, out / "fig1_transform_collapse")
     return result, summary
 
 
@@ -282,11 +376,12 @@ def task4_tail(outdir):
     angles = np.geomspace(10.0, 300.0, 180)
     rows = []
     gates = []
-    for ff_model in SCAN_FF_MODELS:
-        rows.extend(tail_ratio_scan("Cu15", 6.0, ff_model, True, angles))
+    for path in ("Cu15", "AlCu"):
+        for ff_model in SCAN_FF_MODELS:
+            rows.extend(tail_ratio_scan(path, 6.0, ff_model, True, angles))
     result = _ordered_columns(pd.DataFrame(rows))
     result.to_csv(out / "tail_ratio_scan.csv", index=False)
-    for ff_model, group in result.groupby("ff_model"):
+    for (path, ff_model), group in result.groupby(["path", "ff_model"]):
         plateau = group[
             (group.theta_mrad >= 1.2 * group.theta_nuc_mrad)
             & (group.theta_mrad <= 1.4 * group.theta_nuc_mrad)
@@ -298,7 +393,7 @@ def task4_tail(outdir):
             dict(
                 ff_model=ff_model,
                 floor=True,
-                path="Cu15",
+                path=path,
                 p_GeV=6.0,
                 theta_cut_mrad=np.nan,
                 plateau_ratio=measured,
@@ -310,8 +405,8 @@ def task4_tail(outdir):
     gate = _ordered_columns(pd.DataFrame(gates))
     gate.to_csv(out / "tail_plateau_gate.csv", index=False)
     fig, ax = plt.subplots(figsize=(5.4, 3.6))
-    for ff_model, group in result.groupby("ff_model"):
-        ax.plot(group.theta_mrad, group.tail_ratio, label=ff_model)
+    for (path, ff_model), group in result.groupby(["path", "ff_model"]):
+        ax.plot(group.theta_mrad, group.tail_ratio, label=f"{path}, {ff_model}")
     first = result.iloc[0]
     ax.axvline(first.theta_FF_mrad, color="0.4", ls="--", label=r"$\theta_{FF}$")
     ax.axvline(first.theta_nuc_mrad, color="0.4", ls=":", label=r"$\theta_{nuc}$")
@@ -323,6 +418,135 @@ def task4_tail(outdir):
     _save_figure(fig, out / "three_regime_tail")
     assert bool(gate.pass_gate.all()), "Task 4 incoherent-floor plateau gate failed"
     return result, gate
+
+
+def task10_composition(outdir, eta_cut=2.713):
+    """Small-angle-valid matched-eta composition comparison at 1 GeV/c."""
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for ff_model, internal in (
+        ("gauss", "gaussian"), ("sphere", "uniform_sphere")
+    ):
+        for path in SCAN_PATHS:
+            base = _constant_transform_calibration(
+                PATHS[path], 1.0, THETA_CUT, internal, True
+            )
+            scale = math.sqrt(base["chi_c2"] * base["B"])
+            cut = float(eta_cut) * scale
+            q = _constant_transform_calibration(
+                PATHS[path], 1.0, cut, internal, True
+            )
+            rows.append(dict(
+                ff_model=ff_model, floor=True, path=path, p_GeV=1.0,
+                theta_cut_mrad=1000.0 * cut, eta_cut=float(eta_cut),
+                rho=finite_size_rho(
+                    base["chi_c2"], base["B"], base["tail_components"]
+                ),
+                eps_M=q["epsilon"], eps_M_percent=100.0 * q["epsilon"],
+            ))
+    result = _ordered_columns(pd.DataFrame(rows))
+    result.to_csv(out / "eta_2p713_composition.csv", index=False)
+    spreads = []
+    for ff_model, group in result.groupby("ff_model"):
+        values = group.set_index("path").eps_M_percent
+        spreads.append(dict(
+            ff_model=ff_model, floor=True, path="Pb15/AlCu", p_GeV=1.0,
+            theta_cut_mrad=np.nan, eta_cut=float(eta_cut),
+            Pb_minus_AlCu_pp=values["Pb15"] - values["AlCu"],
+            inversion_survives=values["Pb15"] < values["AlCu"],
+        ))
+    summary = _ordered_columns(pd.DataFrame(spreads))
+    summary.to_csv(out / "eta_2p713_inversion_summary.csv", index=False)
+    return result, summary
+
+
+def task8_matrix_summary(compare_dir, outdir, n_seeds=3):
+    """Require the full transport matrix, then emit bands before core fits."""
+    source = Path(compare_dir)
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    pattern = re.compile(
+        r"^(Cu|Pb)_t15\.0_p(1\.0|2\.0|3\.5|6\.0)_seed([0-9]+)_"
+        r"(point|gauss|sphere)_(on|off)_compare_(bands|core)\.csv$"
+    )
+    records = []
+    for file in source.glob("*_compare_*.csv"):
+        match = pattern.match(file.name)
+        if match:
+            material, momentum, seed, model, floor, kind = match.groups()
+            records.append(dict(
+                material=material, p=float(momentum), seed=int(seed),
+                ff_model=model, floor=floor, kind=kind, file=file,
+            ))
+    index = {
+        (r["material"], r["p"], r["seed"], r["ff_model"], r["floor"], r["kind"])
+        for r in records
+    }
+    variants = (("point", "off"), ("gauss", "on"), ("gauss", "off"),
+                ("sphere", "on"), ("sphere", "off"))
+    expected = {
+        (material, p, seed, model, floor, kind)
+        for material in ("Cu", "Pb")
+        for p in MOMENTA
+        for seed in range(1, int(n_seeds) + 1)
+        for model, floor in variants
+        for kind in ("bands", "core")
+    }
+    missing = sorted(expected - index)
+    pd.DataFrame(
+        missing,
+        columns=("material", "p", "seed", "ff_model", "floor", "kind"),
+    ).to_csv(out / "matrix_missing.csv", index=False)
+    if missing:
+        raise AssertionError(
+            f"Task 8 matrix incomplete: {len(missing)} band/core files missing"
+        )
+
+    bands = []
+    cores = []
+    for record in records:
+        frame = pd.read_csv(record["file"])
+        frame["seed"] = record["seed"]
+        frame["material"] = record["material"]
+        (bands if record["kind"] == "bands" else cores).append(frame)
+    bands = pd.concat(bands, ignore_index=True)
+    bands["theta_FF"] = [
+        HBARC_MEV_FM / (
+            1000.0 * row.p * nuclear_radius_fm(MATERIALS[row.material].A)
+        )
+        for row in bands.itertuples()
+    ]
+    bands["above_theta_FF"] = bands.theta_hi > bands.theta_FF
+    bands["prob_diff_model_minus_g4"] = bands.prob_model - bands.prob_g4
+    above = bands[bands.above_theta_FF].copy()
+    band_keys = [
+        "material", "target", "p", "transport", "ff_model", "floor",
+        "u_lo", "u_hi", "theta_lo", "theta_hi", "theta_FF",
+    ]
+    band_summary = above.groupby(band_keys, as_index=False).agg(
+        n_seeds=("seed", "nunique"),
+        probability_difference_mean=("prob_diff_model_minus_g4", "mean"),
+        probability_difference_sd=("prob_diff_model_minus_g4", "std"),
+        M2_numerator_difference_mean=("m2_numerator_diff_model_minus_g4", "mean"),
+        M2_numerator_difference_sd=("m2_numerator_diff_model_minus_g4", "std"),
+    )
+    # This file is deliberately written first: Task 8 makes it the first
+    # decision artifact once the matrix lands.
+    band_summary.to_csv(out / "bands_above_theta_FF.csv", index=False)
+
+    cores = pd.concat(cores, ignore_index=True)
+    core_keys = ["material", "target", "p", "transport", "ff_model", "floor"]
+    core_summary = cores.groupby(core_keys, as_index=False).agg(
+        n_seeds=("seed", "nunique"),
+        projected_fit_fraction=("projected_fit_fraction", "first"),
+        theta0_fractional_difference_mean=("theta0_frac_model_over_g4", "mean"),
+        theta0_fractional_difference_sd=("theta0_frac_model_over_g4", "std"),
+        radial_core_fractional_difference_mean=("core_frac_model_over_g4", "mean"),
+        radial_core_fractional_difference_sd=("core_frac_model_over_g4", "std"),
+    )
+    core_summary.to_csv(out / "central_projected_angle_fits.csv", index=False)
+    return band_summary, core_summary
 
 
 def transform_g1_closure(outdir, threshold_pp=0.05):
@@ -992,14 +1216,16 @@ def cache_sensitivity(outdir, n_events=500_000, seed=0, form_factor="none"):
             cut_step=CUT_CACHE_STEP,
         ),
         "fine": dict(
-            p_step=P_CACHE_STEP / 5.0,
-            segment_step=SEG_CACHE_STEP / 5.0,
-            cut_step=CUT_CACHE_STEP / 4.0,
+            p_step=P_CACHE_STEP / 10.0,
+            segment_step=SEG_CACHE_STEP / 10.0,
+            cut_step=CUT_CACHE_STEP / 10.0,
         ),
     }
     rows = []
     for label, kwargs in settings.items():
-        cache = PofxCache(nmax=2, form_factor=form_factor, **kwargs)
+        cache = PofxCache(
+            nmax=2, form_factor=form_factor, validation_only=True, **kwargs
+        )
         df = simulate_fixed_node(
             1.0,
             int(n_events),
@@ -1043,6 +1269,487 @@ def cache_sensitivity(outdir, n_events=500_000, seed=0, form_factor="none"):
     return result, comparison
 
 
+def _task9_floor_coordinates(components, scale):
+    """Return material coordinates not fixed by ``(B, rho)``.
+
+    These are diagnostics rather than proposed cache axes.  They make the
+    sufficiency of the requested two-dimensional reduced cache testable for
+    the incoherent-floor variants.
+    """
+    rows = tuple(components)
+    floor_height = sum(
+        frac * A / (Z * (Z + 1.0)) for frac, Z, A, _ in rows
+    )
+    proton_scale = math.exp(
+        sum(frac * math.log(math.sqrt(0.71) / p) for frac, _, _, p in rows)
+    )
+    return floor_height, proton_scale / scale
+
+
+def _weighted_quantiles(values, weights, probabilities):
+    values = np.asarray(values, float)
+    weights = np.asarray(weights, float)
+    order = np.argsort(values)
+    values = values[order]
+    weights = weights[order]
+    positions = (np.cumsum(weights) - 0.5 * weights) / np.sum(weights)
+    return np.interp(probabilities, positions, values)
+
+
+def _task9_hybrid_axis(values, weights, n_nodes, margin_fraction):
+    """Mix uniform support coverage with production-weighted resolution."""
+    values = np.asarray(values, float)
+    weights = np.asarray(weights, float)
+    n_nodes = int(n_nodes)
+    if n_nodes < 4:
+        raise ValueError("a reduced-cache axis requires at least four nodes")
+    lo, hi = float(values.min()), float(values.max())
+    margin = float(margin_fraction) * (hi - lo)
+    n_uniform = max(4, n_nodes // 3)
+    n_weighted = n_nodes - n_uniform
+    uniform = np.linspace(lo - margin, hi + margin, n_uniform)
+    probabilities = (np.arange(n_weighted, dtype=float) + 0.5) / n_weighted
+    weighted = _weighted_quantiles(values, weights, probabilities)
+    nodes = np.unique(np.concatenate((uniform, weighted)))
+    if len(nodes) != n_nodes:
+        # Continuous production coordinates should make this exceptional; a
+        # deterministic uniform fallback preserves the requested table shape.
+        nodes = np.linspace(lo - margin, hi + margin, n_nodes)
+    return nodes
+
+
+def task9_support(event_file, outdir, n_kinks=1, dump_events=True):
+    """Dump empirical ``(B, rho, s)`` support for target and reference paths.
+
+    The event kinematics come from one already-generated point-nucleus seed.
+    Calibrations are evaluated once per production cache key and expanded back
+    to event/kink rows, preserving the actual production weights while avoiding
+    redundant p(X) integrations.
+    """
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    df = load_events(event_file)
+    required = {
+        "p_set", "p_true",
+        *{
+            f"{prefix}_{name}"
+            for prefix in ("true", "ref_true")
+            for name in ("al_up", "cu_up", "pb", "cu_down", "al_down")
+        },
+    }
+    missing = sorted(required.difference(df.columns))
+    if missing:
+        raise ValueError(f"support probe is missing event columns: {missing}")
+
+    cache = PofxCache(nmax=2, form_factor="none")
+    cut_key = round(THETA_CUT / cache.cut_step)
+    names = ("al_up", "cu_up", "pb", "cu_down", "al_down")
+    materials = ("Al", "Cu", "Pb", "Cu", "Al")
+    summaries = []
+    all_plot_rows = []
+    for geometry, prefix in (("target", "true"), ("reference", "ref_true")):
+        keys = np.empty((len(df), 6), dtype=np.int64)
+        keys[:, 0] = np.rint(df.p_true.to_numpy(float) / cache.p_step).astype(np.int64)
+        for j, (name, material) in enumerate(zip(names, materials), start=1):
+            thickness = df[f"{prefix}_{name}"].to_numpy(float)
+            keys[:, j] = np.rint(
+                thickness * MATERIALS[material].rho / cache.segment_step
+            ).astype(np.int64)
+        unique, first, inverse, counts = np.unique(
+            keys, axis=0, return_index=True, return_inverse=True, return_counts=True
+        )
+        values = np.full((len(unique), int(n_kinks), 5), np.nan, dtype=np.float64)
+        started = time.perf_counter()
+        for i, raw_key in enumerate(unique):
+            full_key = (*map(int, raw_key), int(cut_key))
+            p_value, segments, _ = cache._decode(full_key)
+            result = cache._local_kink_calibrations(
+                p_value, segments, int(n_kinks), THETA_CUT
+            )
+            if result is None:
+                continue
+            local, _, _ = result
+            for kink, q in enumerate(local):
+                scale = math.sqrt(q["chi_c2"] * q["B"])
+                rho = finite_size_rho(
+                    q["chi_c2"], q["B"], q["tail_components"]
+                )
+                floor_height, proton_rho = _task9_floor_coordinates(
+                    q["tail_components"], scale
+                )
+                values[i, kink] = (
+                    q["B"], rho, scale, floor_height, proton_rho
+                )
+
+        flat_unique = values.reshape(-1, values.shape[-1])
+        unique_dump = pd.DataFrame({
+            "event_index": np.repeat(first.astype(np.int32), int(n_kinks)),
+            "p_set": np.repeat(df.p_set.to_numpy(np.float32)[first], int(n_kinks)),
+            "geometry": geometry,
+            "kink": np.tile(np.arange(int(n_kinks), dtype=np.uint8), len(unique)),
+            "count": np.repeat(counts.astype(np.int32), int(n_kinks)),
+            "B": flat_unique[:, 0].astype(np.float32),
+            "rho": flat_unique[:, 1].astype(np.float32),
+            "s": flat_unique[:, 2].astype(np.float32),
+            "floor_height": flat_unique[:, 3].astype(np.float32),
+            "proton_rho": flat_unique[:, 4].astype(np.float32),
+        })
+        unique_dump = unique_dump[
+            np.isfinite(unique_dump.B) & np.isfinite(unique_dump.rho)
+            & (unique_dump.rho > 0.0)
+        ]
+        unique_dump.to_parquet(
+            out / f"support_unique_{geometry}_k{int(n_kinks)}.parquet", index=False
+        )
+
+        if dump_events:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+
+            dump_file = out / f"support_{geometry}_k{int(n_kinks)}.parquet"
+            writer = None
+            try:
+                for start in range(0, len(df), 100_000):
+                    stop = min(start + 100_000, len(df))
+                    expanded = values[inverse[start:stop]]
+                    flat = expanded.reshape(-1, expanded.shape[-1])
+                    chunk = pd.DataFrame({
+                        "event_index": np.repeat(
+                            np.arange(start, stop, dtype=np.int32), int(n_kinks)
+                        ),
+                        "p_set": np.repeat(
+                            df.p_set.to_numpy(np.float32)[start:stop], int(n_kinks)
+                        ),
+                        "geometry": geometry,
+                        "kink": np.tile(
+                            np.arange(int(n_kinks), dtype=np.uint8), stop - start
+                        ),
+                        "B": flat[:, 0].astype(np.float32),
+                        "rho": flat[:, 1].astype(np.float32),
+                        "s": flat[:, 2].astype(np.float32),
+                        "floor_height": flat[:, 3].astype(np.float32),
+                        "proton_rho": flat[:, 4].astype(np.float32),
+                    })
+                    table = pa.Table.from_pandas(chunk, preserve_index=False)
+                    if writer is None:
+                        writer = pq.ParquetWriter(dump_file, table.schema)
+                    writer.write_table(table)
+            finally:
+                if writer is not None:
+                    writer.close()
+
+        for p_set, group in unique_dump.groupby("p_set"):
+            for column in ("B", "rho", "s", "floor_height", "proton_rho"):
+                a = group[column].to_numpy(float)
+                quantiles = _weighted_quantiles(
+                    a, group["count"].to_numpy(float),
+                    [0.0, 1e-4, 1e-3, 0.01, 0.5, 0.99, 0.999, 0.9999, 1.0],
+                )
+                summaries.append(dict(
+                    geometry=geometry, p_GeV=float(p_set), n_kinks=int(n_kinks),
+                    coordinate=column, n_events=int(group["count"].sum()),
+                    **{f"q{label}": value for label, value in zip(
+                        ("0", "0001", "001", "01", "50", "99", "999", "9999", "100"),
+                        quantiles,
+                    )},
+                ))
+        sample = unique_dump.iloc[::max(1, len(unique_dump) // 250_000)].copy()
+        all_plot_rows.append(sample)
+        print(
+            f"Task 9 support {geometry}: {len(unique)} cache keys, "
+            f"{int(unique_dump['count'].sum())} event/kink rows in "
+            f"{time.perf_counter()-started:.1f} s"
+        )
+
+    summary = pd.DataFrame(summaries)
+    summary.to_csv(out / "support_summary.csv", index=False)
+    plot = pd.concat(all_plot_rows, ignore_index=True)
+    fig, axes = plt.subplots(1, 2, figsize=(9.0, 3.6), sharey=True)
+    for ax, geometry in zip(axes, ("target", "reference")):
+        q = plot[plot.geometry == geometry]
+        hb = ax.hexbin(
+            1.0 / q.B, np.log(q.rho), C=q["count"], gridsize=70,
+            bins="log", mincnt=1, reduce_C_function=np.sum,
+        )
+        ax.set(title=geometry, xlabel=r"$1/B$", ylabel=r"$\ln\rho$")
+        fig.colorbar(hb, ax=ax, label="log count")
+    fig.tight_layout()
+    _save_figure(fig, out / f"support_B_rho_k{int(n_kinks)}")
+    return summary
+
+
+def _task9_empirical_templates(df, support, B_grid, rho_grid):
+    """Choose the nearest observed material mixture for each reduced node."""
+    from scipy.spatial import cKDTree
+
+    coordinates = np.column_stack((
+        1.0 / support.B.to_numpy(float),
+        np.log(support.rho.to_numpy(float)),
+    ))
+    tree = cKDTree(coordinates)
+    BB, RR = np.meshgrid(B_grid, rho_grid, indexing="ij")
+    query = np.column_stack((1.0 / BB.ravel(), np.log(RR.ravel())))
+    _, nearest = tree.query(query, k=1)
+    selected = support.iloc[np.asarray(nearest, int)].reset_index(drop=True)
+    cache = PofxCache(nmax=2, form_factor="none")
+    names = ("al_up", "cu_up", "pb", "cu_down", "al_down")
+    templates = np.empty(BB.size, dtype=object)
+    for i, row in selected.iterrows():
+        event = df.iloc[int(row.event_index)]
+        prefix = "true" if row.geometry == "target" else "ref_true"
+        segments = np.asarray([event[f"{prefix}_{name}"] for name in names], float)
+        result = cache._local_kink_calibrations(
+            float(event.p_true), segments, int(row.n_kinks), THETA_CUT
+        )
+        q = result[0][int(row.kink)]
+        source_B = float(q["B"])
+        source_s = math.sqrt(q["chi_c2"] * source_B)
+        source_rho = finite_size_rho(
+            q["chi_c2"], source_B, q["tail_components"]
+        )
+        target_rho = float(RR.ravel()[i])
+        templates[i] = tuple(
+            (frac, Z, A, p * source_s * source_rho / target_rho)
+            for frac, Z, A, p in q["tail_components"]
+        )
+    return templates.reshape(BB.shape)
+
+
+def task9_build_cache(
+    event_file,
+    support_dirs,
+    out_file,
+    ff_model,
+    floor,
+    *,
+    n_B=16,
+    n_rho=45,
+    workers=1,
+):
+    """Build one empirical reduced cache over the complete observed support."""
+    from reduced_cache import build_reduced_cache, default_eta_grid
+
+    if isinstance(support_dirs, (str, Path)):
+        support_dirs = [support_dirs]
+    frames = []
+    kink_counts = []
+    for raw_dir in support_dirs:
+        support_dir = Path(raw_dir)
+        for geometry in ("target", "reference"):
+            matches = sorted(
+                support_dir.glob(f"support_unique_{geometry}_k*.parquet")
+            )
+            if not matches:
+                matches = sorted(support_dir.glob(f"support_{geometry}_k*.parquet"))
+            if len(matches) != 1:
+                raise ValueError(
+                    f"expected one {geometry} support file in {support_dir}, got {matches}"
+                )
+            match = re.search(r"_k([0-9]+)\.parquet$", matches[0].name)
+            n_kinks = int(match.group(1))
+            kink_counts.append(n_kinks)
+            q = pd.read_parquet(matches[0])
+            q = q[
+                np.isfinite(q.B) & np.isfinite(q.rho)
+                & (q.rho > 0.0) & (q.s > 0.0)
+            ].copy()
+            if "count" not in q:
+                q["count"] = 1
+            q["geometry"] = geometry
+            q["n_kinks"] = n_kinks
+            frames.append(q)
+    support = pd.concat(frames, ignore_index=True)
+    B_min, B_max = support.B.min(), support.B.max()
+    weights = support["count"].to_numpy(float)
+    B_values = support.B.to_numpy(float)
+    # Most of the template-family transitions live in the upper 75% of the
+    # production B distribution.  Resolve that occupied interval explicitly;
+    # a marginal-quantile-only grid can otherwise leave multi-unit endpoint
+    # cells and interpolate across Al/Cu mixture branches.
+    n_dense_B = max(4, int(round(0.60 * int(n_B))))
+    n_broad_B = int(n_B) - n_dense_B
+    dense_B_lo = float(_weighted_quantiles(B_values, weights, [0.25])[0])
+    broad_x = _task9_hybrid_axis(
+        1.0 / B_values, weights, n_broad_B, 0.03
+    )
+    dense_x = np.linspace(1.0 / B_max, 1.0 / dense_B_lo, n_dense_B)
+    x_grid = np.unique(np.concatenate((broad_x, dense_x)))
+    B_grid = 1.0 / x_grid
+    B_grid.sort()
+    log_rho = np.log(support.rho.to_numpy(float))
+    n_dense_rho = max(4, int(round(0.80 * int(n_rho))))
+    n_broad_rho = int(n_rho) - n_dense_rho
+    dense_rho_lo, dense_rho_hi = _weighted_quantiles(
+        log_rho, weights, [0.001, 0.999]
+    )
+    broad_rho = _task9_hybrid_axis(
+        log_rho, weights, n_broad_rho, 0.05
+    )
+    dense_rho = np.linspace(dense_rho_lo, dense_rho_hi, n_dense_rho)
+    rho_grid = np.exp(np.unique(np.concatenate((broad_rho, dense_rho))))
+    # Resolve the untruncated proton tail, not merely the largest physical cut.
+    eta_max = max(
+        1.25 * THETA_CUT / support.s.min(),
+        60.0 * support.proton_rho.max(),
+        75.0 * support.rho.max(),
+    )
+    eta_grid = default_eta_grid(eta_max)
+    df = load_events(event_file)
+    templates = _task9_empirical_templates(df, support, B_grid, rho_grid)
+    cache = build_reduced_cache(
+        B_grid, rho_grid, eta_grid, ff_model, bool(floor),
+        templates=templates, workers=int(workers),
+    )
+    cache.save(out_file)
+    metadata = pd.DataFrame([dict(
+        ff_model=ff_model, floor=bool(floor),
+        n_kinks=";".join(map(str, sorted(set(kink_counts)))),
+        axis_grid="uniform_plus_weighted_quantiles",
+        n_B=len(B_grid), n_rho=len(rho_grid), n_u=len(cache.u_grid),
+        B_min=B_grid.min(), B_max=B_grid.max(),
+        rho_min=rho_grid.min(), rho_max=rho_grid.max(), eta_max=eta_max,
+        observed_B_min=B_min, observed_B_max=B_max,
+        observed_rho_min=support.rho.min(), observed_rho_max=support.rho.max(),
+    )])
+    metadata.to_csv(Path(out_file).with_suffix(".metadata.csv"), index=False)
+    return cache, metadata
+
+
+def task9_validate_cache(
+    event_file, support_dir, cache_file, outdir, *, n_points=56, seed=20260828
+):
+    """Apply the off-node M2, loud-support, and lookup-performance gates."""
+    from reduced_cache import ReducedSamplerCache
+
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    reduced = ReducedSamplerCache.load(cache_file)
+    support_dir = Path(support_dir)
+    frames = []
+    n_kinks = None
+    for geometry in ("target", "reference"):
+        matches = sorted(support_dir.glob(f"support_unique_{geometry}_k*.parquet"))
+        if not matches:
+            matches = sorted(support_dir.glob(f"support_{geometry}_k*.parquet"))
+        if len(matches) != 1:
+            raise ValueError(f"expected one compact {geometry} support file, got {matches}")
+        match = re.search(r"_k([0-9]+)\.parquet$", matches[0].name)
+        current_n = int(match.group(1))
+        n_kinks = current_n if n_kinks is None else n_kinks
+        if current_n != n_kinks:
+            raise ValueError("target/reference support kink counts differ")
+        q = pd.read_parquet(matches[0])
+        if "count" not in q:
+            q["count"] = 1
+        q = q[np.isfinite(q.B) & np.isfinite(q.rho) & (q.rho > 0.0)].copy()
+        q["geometry"] = geometry
+        frames.append(q)
+    support = pd.concat(frames, ignore_index=True)
+    inside_B = support.B.between(
+        reduced.B_grid[0], reduced.B_grid[-1], inclusive="both"
+    )
+    inside_rho = support.rho.between(
+        reduced.rho_grid[0], reduced.rho_grid[-1], inclusive="both"
+    )
+    support_inside = inside_B & inside_rho
+    support_misses = int((~support_inside).sum())
+    if support_misses:
+        misses = support.loc[
+            ~support_inside,
+            ["event_index", "geometry", "kink", "B", "rho"],
+        ].head(10)
+        raise AssertionError(
+            "Task 9 production support falls outside the reduced cache "
+            f"({support_misses} rows); first misses:\n{misses.to_string(index=False)}"
+        )
+    weights = support["count"].to_numpy(float)
+    weights /= weights.sum()
+    rng = np.random.default_rng(int(seed))
+    chosen = []
+    for raw in rng.choice(len(support), size=max(20 * int(n_points), 2000), p=weights):
+        row = support.iloc[int(raw)]
+        if (
+            np.min(np.abs(reduced.B_grid - row.B)) > 1.0e-8
+            and np.min(np.abs(reduced.rho_grid - row.rho)) > 1.0e-8
+        ):
+            chosen.append(row)
+        if len(chosen) >= int(n_points):
+            break
+    if len(chosen) < int(n_points):
+        raise RuntimeError("could not draw enough strictly off-node support points")
+
+    df = load_events(event_file)
+    point_cache = PofxCache(nmax=2, form_factor="none")
+    names = ("al_up", "cu_up", "pb", "cu_down", "al_down")
+    rows = []
+    for i, row in enumerate(chosen):
+        event = df.iloc[int(row.event_index)]
+        prefix = "true" if row.geometry == "target" else "ref_true"
+        segments = np.asarray([event[f"{prefix}_{name}"] for name in names], float)
+        result = point_cache._local_kink_calibrations(
+            float(event.p_true), segments, int(n_kinks), THETA_CUT
+        )
+        q = result[0][int(row.kink)]
+        B = float(q["B"])
+        scale = math.sqrt(q["chi_c2"] * B)
+        rho = finite_size_rho(q["chi_c2"], B, q["tail_components"])
+        eta_cut = THETA_CUT / scale
+        _, M2, _ = transform_moments_finite_size(
+            q["chi_c2"], B, THETA_CUT, q["tail_components"],
+            reduced.ff_model, include_incoherent=reduced.floor,
+        )
+        direct = M2 / scale**2
+        interpolated = reduced.truncated_m2(B, rho, eta_cut)
+        relative = interpolated / direct - 1.0
+        rows.append(dict(
+            index=i, event_index=int(row.event_index), geometry=row.geometry,
+            p_GeV=float(row.p_set), kink=int(row.kink), ff_model=reduced.ff_model,
+            floor=reduced.floor, B=B, rho=rho, s=scale, eta_cut=eta_cut,
+            M2_direct_reduced=direct, M2_cache_reduced=interpolated,
+            relative_difference=relative,
+            pass_3p5e4=abs(relative) <= 3.5e-4,
+        ))
+    result = pd.DataFrame(rows)
+    result.to_csv(out / "offnode_m2_gate.csv", index=False)
+
+    probe_u = rng.random(2_000_000)
+    probe = result.iloc[len(result) // 2]
+    started = time.perf_counter()
+    reduced.sample_eta(probe.B, probe.rho, probe.eta_cut, probe_u)
+    lookup_us = 1.0e6 * (time.perf_counter() - started) / len(probe_u)
+    summary = pd.DataFrame([dict(
+        ff_model=reduced.ff_model, floor=reduced.floor,
+        n_points=len(result),
+        max_abs_relative=result.relative_difference.abs().max(),
+        pass_M2=bool(result.pass_3p5e4.all()),
+        lookup_us_per_event=lookup_us,
+        pass_sub_millisecond=lookup_us < 1000.0,
+        production_support_rows=len(support),
+        production_support_misses=support_misses,
+        pass_production_support=bool(support_misses == 0),
+        B_support_min=reduced.B_grid.min(), B_support_max=reduced.B_grid.max(),
+        rho_support_min=reduced.rho_grid.min(), rho_support_max=reduced.rho_grid.max(),
+    )])
+    summary.to_csv(out / "cache_gate_summary.csv", index=False)
+    # Exercise both loud-failure branches explicitly.
+    for B, rho in (
+        (np.nextafter(reduced.B_grid[0], -np.inf), probe.rho),
+        (probe.B, np.nextafter(reduced.rho_grid[-1], np.inf)),
+    ):
+        try:
+            reduced.inverse_at(B, rho, np.asarray([0.5]))
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("reduced cache silently extrapolated")
+    assert bool(summary.pass_M2.iloc[0]), "Task 9 off-node M2 gate failed"
+    assert bool(summary.pass_sub_millisecond.iloc[0]), "Task 9 lookup performance failed"
+    assert bool(summary.pass_production_support.iloc[0]), (
+        "Task 9 production support gate failed"
+    )
+    return result, summary
+
+
 def occupancy_threshold(theta_cut, baseline_cut=THETA_CUT, baseline_count=MIN_VOX_COUNT):
     def worst_variance(cut):
         vals = []
@@ -1066,7 +1773,11 @@ def cut_sweep(event_files, outdir):
     occ_rows = []
     cut_settings = {}
     for cut in cuts:
-        min_count, ratios, baseline_var = occupancy_threshold(cut)
+        variance_matched_count, ratios, baseline_var = occupancy_threshold(cut)
+        # Task 11 compares cuts at one pre-registered occupancy threshold;
+        # changing the voxel mask with the cut would confound acceptance with
+        # a changing spatial sample.
+        min_count = MIN_VOX_COUNT
         cut_settings[cut] = min_count
         for p, ratio in zip(MOMENTA, ratios):
             occ_rows.append(
@@ -1076,6 +1787,7 @@ def cut_sweep(event_files, outdir):
                     M4_over_M2sq=ratio + 1.0,
                     sigma_w_over_sqrtN_at_20=math.sqrt(ratio / 20.0),
                     selected_min_count=min_count,
+                    variance_matched_min_count=variance_matched_count,
                     baseline_worst_variance=baseline_var,
                 )
             )
@@ -1391,6 +2103,13 @@ def main():
     p.add_argument("--out", default="out/validation/task3")
     p = sub.add_parser("task4")
     p.add_argument("--out", default="out/validation/task4")
+    p = sub.add_parser("task10")
+    p.add_argument("--out", default="out/validation/task10")
+    p.add_argument("--eta-cut", type=float, default=2.713)
+    p = sub.add_parser("task8-summary")
+    p.add_argument("compare_dir")
+    p.add_argument("--out", default="out/validation/task8")
+    p.add_argument("--n-seeds", type=int, default=3)
     p = sub.add_parser("geant4-finite")
     p.add_argument("--out", default="out/validation/geant4_finite")
     p.add_argument("--rawdir", default="out/geant4/raw")
@@ -1401,6 +2120,30 @@ def main():
     p.add_argument("--out", default="out/validation/cache")
     p.add_argument("--n-events", type=int, default=500_000)
     p.add_argument("--form-factor", choices=("none", "gaussian", "uniform_sphere"), default="none")
+    p = sub.add_parser("task9-support")
+    p.add_argument("events")
+    p.add_argument("--out", default="out/validation/task9/support")
+    p.add_argument("--n-kinks", type=int, default=1)
+    p.add_argument(
+        "--compact", action="store_true",
+        help="write weighted unique-key rows only, not the expanded event/kink dump",
+    )
+    p = sub.add_parser("task9-build")
+    p.add_argument("events")
+    p.add_argument("support_dirs", nargs="+")
+    p.add_argument("--out", required=True)
+    p.add_argument("--ff-model", choices=("gaussian", "uniform_sphere"), required=True)
+    p.add_argument("--floor", choices=("on", "off"), required=True)
+    p.add_argument("--n-B", type=int, default=16)
+    p.add_argument("--n-rho", type=int, default=45)
+    p.add_argument("--workers", type=int, default=1)
+    p = sub.add_parser("task9-validate")
+    p.add_argument("events")
+    p.add_argument("support_dir")
+    p.add_argument("cache_file")
+    p.add_argument("--out", required=True)
+    p.add_argument("--n-points", type=int, default=56)
+    p.add_argument("--seed", type=int, default=20260828)
     p = sub.add_parser("cut-sweep")
     p.add_argument("events", nargs="+")
     p.add_argument("--out", default="out/validation/cuts")
@@ -1456,6 +2199,16 @@ def main():
     elif a.cmd == "task4":
         _, gate = task4_tail(a.out)
         print(gate.to_string(index=False))
+    elif a.cmd == "task10":
+        result, summary = task10_composition(a.out, eta_cut=a.eta_cut)
+        print(result.to_string(index=False))
+        print("\n", summary.to_string(index=False))
+    elif a.cmd == "task8-summary":
+        bands, core = task8_matrix_summary(
+            a.compare_dir, a.out, n_seeds=a.n_seeds
+        )
+        print("Bands above theta_FF:\n", bands.to_string(index=False))
+        print("\nCentral projected-angle fits:\n", core.to_string(index=False))
     elif a.cmd == "geant4-finite":
         summary, _ = geant4_finite_size_benchmark(a.out, rawdir=a.rawdir)
         print(summary.to_string(index=False))
@@ -1464,6 +2217,24 @@ def main():
     elif a.cmd == "cache":
         _, c = cache_sensitivity(a.out, n_events=a.n_events, form_factor=a.form_factor)
         print(c.to_string(index=False))
+    elif a.cmd == "task9-support":
+        print(task9_support(
+            a.events, a.out, n_kinks=a.n_kinks,
+            dump_events=not a.compact,
+        ).to_string(index=False))
+    elif a.cmd == "task9-build":
+        _, metadata = task9_build_cache(
+            a.events, a.support_dirs, a.out, a.ff_model, a.floor == "on",
+            n_B=a.n_B, n_rho=a.n_rho,
+            workers=a.workers,
+        )
+        print(metadata.to_string(index=False))
+    elif a.cmd == "task9-validate":
+        _, summary = task9_validate_cache(
+            a.events, a.support_dir, a.cache_file, a.out,
+            n_points=a.n_points, seed=a.seed,
+        )
+        print(summary.to_string(index=False))
     elif a.cmd == "cut-sweep":
         _, s = cut_sweep(a.events, a.out)
         print(s.to_string(index=False))

@@ -1149,6 +1149,10 @@ def analyze_events(
                 ),
                 screening_weight=cache.screening_weight,
                 form_factor=getattr(cache, "form_factor", "none"),
+                incoherent_floor=getattr(cache, "include_incoherent", True),
+                reduced_sampler_cache=(
+                    getattr(cache, "reduced_cache", None) is not None
+                ),
                 max_clipped=cache.max_clipped,
                 local_kink_fallbacks=getattr(cache, "local_kink_fallbacks", 0),
                 n_kinks=int(use.n_kinks.iloc[0]) if "n_kinks" in use else 1,
@@ -1161,7 +1165,7 @@ def analyze_events(
     return images, counts, weights, cache
 
 def analyze_gradient(df, outdir, cache=None, theta_cut=THETA_CUT):
-    """Spatial-gradient test with self-consistent and closure predictors."""
+    """Spatial-gradient test with upstream-tagged and closure predictors."""
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
     use = df[df.dth_reco.to_numpy(float) <= float(theta_cut)].reset_index(drop=True)
@@ -1170,10 +1174,18 @@ def analyze_gradient(df, outdir, cache=None, theta_cut=THETA_CUT):
     I_Q, _ = image_from_events(use, weights["I_Q"])
     observed = I_nom - I_Q
 
-    # Redesigned mechanism predictor: use the self-consistent p(X) mismatch,
-    # whose four-setting span is materially larger than the upstream-tagged
-    # mismatch used in the original gradient diagnostic.
     valid_reference = np.asarray(weights["valid_reference"], bool)
+    excess_upstream = np.zeros(len(use), float)
+    excess_upstream[valid_reference] = (
+        (1.0 + weights["eps_event"][valid_reference]) ** 2 - 1.0
+    )
+    predicted_upstream, _ = image_from_events(
+        use.loc[valid_reference], excess_upstream[valid_reference]
+    )
+
+    # Keep the matched-p(X) field as a secondary mechanism diagnostic, but the
+    # Task 11 r>=0.5 gate is explicitly applied to the upstream-tagged FF
+    # mismatch above.
     excess_matched = np.zeros(len(use), float)
     excess_matched[valid_reference] = (
         (1.0 + weights["eps_matched_event"][valid_reference]) ** 2 - 1.0
@@ -1194,6 +1206,7 @@ def analyze_gradient(df, outdir, cache=None, theta_cut=THETA_CUT):
     summaries = []
     residuals = {}
     for label, predicted in (
+        ("upstream_tagged_ff_mismatch", predicted_upstream),
         ("self_consistent_normalization_field", predicted_unweighted),
         ("wQ_weighted_closure", predicted_weighted),
     ):
@@ -1206,7 +1219,7 @@ def analyze_gradient(df, outdir, cache=None, theta_cut=THETA_CUT):
         yrms = float(np.sqrt(np.mean(y * y))) if y.size else np.nan
         rrms = float(np.sqrt(np.mean(residual[valid] ** 2))) if y.size else np.nan
         correlation = float(np.corrcoef(x, y)[0, 1]) if x.size > 1 else np.nan
-        threshold = 0.5 if label == "self_consistent_normalization_field" else np.nan
+        threshold = 0.5 if label == "upstream_tagged_ff_mismatch" else np.nan
         summaries.append(
             dict(
                 predictor=label,
@@ -1227,6 +1240,7 @@ def analyze_gradient(df, outdir, cache=None, theta_cut=THETA_CUT):
         centers=CENTERS,
         counts=counts,
         observed=observed,
+        predicted_upstream=predicted_upstream,
         predicted_unweighted=predicted_unweighted,
         predicted_weighted=predicted_weighted,
         residual_unweighted=residuals["self_consistent_normalization_field"],
@@ -1336,6 +1350,11 @@ def refresh_gradient_summary(outdir):
             "self_consistent_normalization_field": z["predicted_unweighted"],
             "wQ_weighted_closure": z["predicted_weighted"],
         }
+        if "predicted_upstream" in z.files:
+            preds = {
+                "upstream_tagged_ff_mismatch": z["predicted_upstream"],
+                **preds,
+            }
     rows = []
     for label, predicted in preds.items():
         valid = valid_voxel_mask(counts, observed, predicted)
@@ -1345,10 +1364,16 @@ def refresh_gradient_summary(outdir):
         residual = y - amp * x
         yrms = _rms(y)
         rrms = _rms(residual)
+        threshold = 0.5 if label == "upstream_tagged_ff_mismatch" else np.nan
+        correlation = float(np.corrcoef(x, y)[0, 1]) if x.size > 1 else np.nan
         rows.append(dict(
             predictor=label,
             amplitude=amp,
-            correlation=float(np.corrcoef(x, y)[0, 1]) if x.size > 1 else np.nan,
+            correlation=correlation,
+            preregistered_correlation_threshold=threshold,
+            passes_preregistered_threshold=(correlation >= threshold)
+            if np.isfinite(threshold) and np.isfinite(correlation)
+            else np.nan,
             observed_rms=yrms,
             residual_rms=rrms,
             residual_fraction=rrms / yrms if yrms else np.nan,

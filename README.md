@@ -8,7 +8,7 @@ The Python production study is a **controlled model-internal detector study**, n
 
 The former 100 mrad form-factor splice is superseded and must not be used. Finite-size theory now inserts `G(q)` inside the screened-Rutherford characteristic exponent and obtains the angular law by an unexpanded Hankel transform. The kernel has `G(0)=1`, transitions to the approximate quasi-elastic nucleon floor `A/[Z(Z+1)]`, and terminates that floor with a dipole proton form factor. Gaussian and uniform-sphere nuclear shapes are both regenerated, with the floor-omitted difference reported as a systematic.
 
-The inverse-CDF sampler is now generated from the transformed density and closes against transform quadrature at the requested `3.5e-4` relative level. Full finite-size detector production remains gated on performance: direct per-path transform tables are too slow for the fine detector cache, so an interpolated cache in reduced transform variables must pass convergence before production. Point-nucleus detector runs remain available; old finite-size detector outputs are superseded.
+The inverse-CDF sampler is generated from the transformed density. `reduced_cache.py` moves the Hankel inversion into a precomputed table in `(1/B, ln rho)`, applies truncation as `u -> u F(eta_cut)`, and raises on every support miss rather than extrapolating. Empirical five- and 25-kink support has been measured for target and reference paths: together it spans `B=3.251--16.158` and `rho=0.492--934.1`, far beyond the four nominal path values. The production grid covers `B=3.175--18.343` and `rho=0.337--1362.344`. All Gaussian/sphere, floor-on/off tables passed the 56-point off-node `M2`, exhaustive support, and sub-millisecond lookup gates, so finite-size detector production is enabled. Old finite-size detector outputs remain superseded and must be regenerated.
 
 The reference geometry replaces Pb by Cu. `geometry.py` traces exact ordered ray segments `[Al_up, Cu_up, Pb, Cu_down, Al_down]`; energy loss is not reconstructed from unordered totals.
 
@@ -73,11 +73,40 @@ python validation.py finite-size-transform
 python validation.py decision-gates
 python validation.py analytic-completion
 python validation.py finite-size-sampler --n-mc 10000000
+python validation.py task8-summary out/geant4/task8/compare --out out/validation/task8
+python validation.py task9-support out/fine/seed0/events.parquet --n-kinks 25 --compact --out out/validation/task9/support_k25
+python validation.py task9-build out/fine/seed0/events.parquet out/validation/task9/support_k5 out/validation/task9/support_k25 --out out/validation/task9/cache_gaussian_floor_on_k5_k25_v5.npz --ff-model gaussian --floor on --n-B 70 --n-rho 70 --workers 6
+python task9_matrix.py out/fine/seed0/events.parquet out/validation/task9/cache_gaussian_floor_on_k5_k25_v5.npz out/validation/task9/support_k5 out/validation/task9/support_k25 --workers 6
+python validation.py task10 --eta-cut 2.713
 python validation.py geant4-finite
 python validation.py kink-composition --n-events 200000
 ```
 
-`tests.py` currently contains 31 physics/geometry and analysis closure tests.
+At the small-angle-valid Task 10 acceptance, `eta_cut=2.713`, the matched-cut
+`epsilon_M` values at 1 GeV/c are:
+
+| form factor | Al25 | Cu15 | AlCu | Pb15 | Pb15 - AlCu |
+|---|---:|---:|---:|---:|---:|
+| Gaussian | 1.337% | -0.119% | -0.474% | -1.505% | -1.032 pp |
+| sphere | 1.322% | -0.275% | -0.630% | -1.752% | -1.122 pp |
+
+The composition inversion therefore survives the smaller reduced acceptance
+for both form factors; it is not only a large-acceptance effect.
+
+The completed Task 9 production-cache gates are:
+
+| form factor | floor | kinks | max relative M2 error | lookup (microseconds/event) | support misses |
+|---|---:|---:|---:|---:|---:|
+| Gaussian | on | 5 | 0.000212 | 0.336 | 0 / 1,409,615 |
+| Gaussian | on | 25 | 0.000304 | 0.334 | 0 / 7,048,075 |
+| Gaussian | off | 5 | 0.000069 | 0.426 | 0 / 1,409,615 |
+| Gaussian | off | 25 | 0.000059 | 0.561 | 0 / 7,048,075 |
+| sphere | on | 5 | 0.000211 | 0.345 | 0 / 1,409,615 |
+| sphere | on | 25 | 0.000309 | 0.385 | 0 / 7,048,075 |
+| sphere | off | 5 | 0.000042 | 0.330 | 0 / 1,409,615 |
+| sphere | off | 25 | 0.000059 | 0.332 | 0 / 7,048,075 |
+
+`tests.py` currently contains 38 physics/geometry and analysis closure tests.
 
 ## Geant4 single-slab benchmark
 
@@ -111,7 +140,6 @@ reports the corresponding quadratic-weight bias, a median/Rayleigh core-width co
 
 The following cannot be completed from source code alone:
 
-- validate a reduced-variable interpolation cache before finite-size detector production;
 - verify the transcribed Sternheimer density-effect constants against the primary PDG/LBL tables;
 - quantify radiative energy loss if a precision stopping-power uncertainty is claimed;
 - archive the final code release and DOI.

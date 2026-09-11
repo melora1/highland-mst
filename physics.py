@@ -623,6 +623,13 @@ def transform_moments_finite_size(
     """Accepted moments with the finite-size kernel inside the transform."""
     if chi_c2 <= 0.0 or theta_cut <= 0.0:
         return 0.0, 0.0, 0.0
+    scale = math.sqrt(float(chi_c2) * float(B))
+    eta = float(theta_cut) / scale
+    if eta > 12.0 * (1.0 + 1.0e-12):
+        return _finite_size_high_eta_moments(
+            chi_c2, B, theta_cut, components, model,
+            include_incoherent=include_incoherent,
+        )
     t, characteristic = _finite_size_characteristic_table(
         float(chi_c2),
         float(B),
@@ -630,8 +637,6 @@ def transform_moments_finite_size(
         _normalize_form_factor(model),
         bool(include_incoherent),
     )
-    scale = math.sqrt(float(chi_c2) * float(B))
-    eta = float(theta_cut) / scale
     x = eta * t
     inv_t = np.zeros_like(t)
     inv_t[1:] = 1.0 / t[1:]
@@ -690,6 +695,72 @@ def untruncated_finite_size_moments(
     kappa2 = float(simpson(theta**2 * rate, x=theta))
     kappa4 = float(simpson(theta**4 * rate, x=theta))
     return kappa2, 2.0 * kappa2 * kappa2 + kappa4
+
+
+def _finite_size_high_eta_moments(
+    chi_c2: float,
+    B: float,
+    theta_cut: float,
+    components,
+    model: str,
+    *,
+    include_incoherent: bool,
+):
+    """Stable accepted moments beyond the direct Hankel cancellation range.
+
+    Analytic finite-cut Bessel kernels lose the small difference between the
+    full moment and the accepted moment once eta is large.  Match the absolute
+    screened single-scatter tail to the directly transformed eta=12 moments
+    and to the exact compound-Poisson full cumulants, then subtract the tail
+    above the requested cut.  The construction is continuous at the join and
+    approaches the exact untruncated moments.
+    """
+    chi_c2 = float(chi_c2)
+    B = float(B)
+    theta_cut = float(theta_cut)
+    model = _normalize_form_factor(model)
+    rows = _tail_component_tuple(components)
+    scale = math.sqrt(chi_c2 * B)
+    theta_join = 12.0 * scale
+    Fc0, M20, M40 = transform_moments_finite_size(
+        chi_c2, B, theta_join, rows, model,
+        include_incoherent=include_incoherent,
+    )
+    full_M2, full_M4 = untruncated_finite_size_moments(
+        chi_c2, B, rows, model,
+        include_incoherent=include_incoherent,
+    )
+    a2 = chi_c2 * B / (MOLIERE_SCREENING_FACTOR * math.exp(B))
+    p_min = min(row[3] for row in rows)
+    theta_max = max(2.0, 40.0 / p_min)
+    theta = np.geomspace(theta_join, theta_max, 16001)
+    G = finite_size_kernel(theta, rows, model, include_incoherent)
+    rate = 2.0 * chi_c2 * theta * G / (theta * theta + a2) ** 2
+
+    def survival(power):
+        integrand = theta**power * rate
+        reverse = cumulative_trapezoid(
+            integrand[::-1], theta[::-1], initial=0.0
+        )
+        return -reverse[::-1]
+
+    tails = [survival(power) for power in (0, 2, 4)]
+    at_cut = [
+        float(np.interp(theta_cut, theta, tail, left=tail[0], right=0.0))
+        for tail in tails
+    ]
+    join_values = [float(tail[0]) for tail in tails]
+    targets = [1.0 - Fc0, full_M2 - Fc0 * M20, full_M4 - Fc0 * M40]
+    factors = [
+        target / value if value > np.finfo(float).tiny else 1.0
+        for target, value in zip(targets, join_values)
+    ]
+    Fc = min(max(1.0 - factors[0] * at_cut[0], 0.0), 1.0)
+    n2 = max(full_M2 - factors[1] * at_cut[1], 0.0)
+    n4 = max(full_M4 - factors[2] * at_cut[2], 0.0)
+    if Fc <= 0.0:
+        return 0.0, 0.0, 0.0
+    return Fc, n2 / Fc, n4 / Fc
 
 
 def transform_radial_density(
@@ -1231,6 +1302,7 @@ def calibrate_pofx(
     nmax: int = 2,
     screening_weight: str = "dchi_c2",
     form_factor: str = "none",
+    include_incoherent: bool = True,
 ):
     if path_x_over_x0(path) <= 0:
         raise ValueError("empty path")
@@ -1243,7 +1315,8 @@ def calibrate_pofx(
         Fc, M2, M4 = radial_moments(c2, B, theta_cut, nmax=nmax)
     else:
         Fc, M2, M4 = transform_moments_finite_size(
-            c2, B, theta_cut, components, form_factor
+            c2, B, theta_cut, components, form_factor,
+            include_incoherent=bool(include_incoherent),
         )
     trms = math.sqrt(max(M2, 0.0))
     xx0 = path_x_over_x0(path)
@@ -1542,20 +1615,50 @@ def efficiency_scan(path, p_GeV, ff_model, floor, cuts_mrad):
     return rows
 
 
+def _constant_transform_calibration(
+    X_by_material, p_GeV, theta_cut, model, floor
+):
+    """Constant-momentum transform result used by composition/collapse scans."""
+    rp = reduced_parameters(X_by_material, float(p_GeV))
+    components = constant_tail_components(X_by_material, float(p_GeV))
+    if model == "none":
+        Fc, M2, M4 = transform_moments_g1(
+            rp["chi_c2"], rp["B"], float(theta_cut)
+        )
+    else:
+        Fc, M2, M4 = transform_moments_finite_size(
+            rp["chi_c2"], rp["B"], float(theta_cut), components, model,
+            include_incoherent=bool(floor),
+        )
+    theta_rms = math.sqrt(max(M2, 0.0))
+    return dict(
+        **rp,
+        Fc=Fc,
+        M2=M2,
+        M4=M4,
+        theta_rms=theta_rms,
+        epsilon=theta_rms / rp["theta_space"] - 1.0,
+        eta_cut=float(theta_cut) / math.sqrt(rp["chi_c2"] * rp["B"]),
+        mu2=M2 / (rp["chi_c2"] * rp["B"]),
+        tail_components=components,
+    )
+
+
 def composition_scan(paths, momenta, cuts_mrad, ff_model, floor):
     """Return the pre-registered composition diagnostics for every scan row."""
     model = _normalize_ff_model(ff_model)
     rows = []
     for path in paths:
         ordered = _validation_path(path)
+        X_by_material = X_by_material_from_path(ordered)
         for p_GeV in momenta:
             for cut_mrad in cuts_mrad:
-                q = calibrate_pofx_transform(
-                    ordered,
+                q = _constant_transform_calibration(
+                    X_by_material,
                     float(p_GeV),
                     float(cut_mrad) * 1.0e-3,
-                    form_factor=model,
-                    include_incoherent=bool(floor),
+                    model,
+                    bool(floor),
                 )
                 theta_ff = _theta_ff_effective(q["tail_components"])
                 rows.append(
@@ -1568,13 +1671,14 @@ def composition_scan(paths, momenta, cuts_mrad, ff_model, floor):
                         chi_c=math.sqrt(q["chi_c2"]),
                         chi_a=math.sqrt(q["chi_a2"]),
                         B=q["B"],
-                        R=q["R_matched"],
+                        R=q["R"],
                         s=math.sqrt(q["chi_c2"] * q["B"]),
                         theta_FF=theta_ff,
                         rho=theta_ff / math.sqrt(q["chi_c2"] * q["B"]),
                         eta_cut=q["eta_cut"],
                         mu2=q["mu2"],
-                        eps_M=q["epsilon_matched"],
+                        eps_M=q["epsilon"],
+                        theta_space=q["theta_space"],
                     )
                 )
     return rows
@@ -1789,6 +1893,9 @@ class PofxCache:
         p_step: float = P_CACHE_STEP,
         segment_step: float = SEG_CACHE_STEP,
         cut_step: float = CUT_CACHE_STEP,
+        validation_only: bool = False,
+        include_incoherent: bool = True,
+        reduced_cache=None,
     ):
         if screening_weight not in {"dchi_c2", "serial"}:
             raise ValueError("screening_weight must be 'dchi_c2' or 'serial'")
@@ -1796,7 +1903,26 @@ class PofxCache:
         self.tol = tol
         self.screening_weight = screening_weight
         self.form_factor = _normalize_form_factor(form_factor)
-        if self.form_factor != "none" and not FINITE_SIZE_PRODUCTION_ENABLED:
+        self.include_incoherent = bool(include_incoherent)
+        if isinstance(reduced_cache, (str, os.PathLike)):
+            from reduced_cache import ReducedSamplerCache
+            reduced_cache = ReducedSamplerCache.load(reduced_cache)
+        self.reduced_cache = reduced_cache
+        if self.reduced_cache is not None:
+            if self.form_factor == "none":
+                raise ValueError("a reduced finite-size cache requires a form factor")
+            if self.reduced_cache.ff_model != self.form_factor:
+                raise ValueError(
+                    f"reduced cache model {self.reduced_cache.ff_model!r} does not "
+                    f"match {self.form_factor!r}"
+                )
+            if self.reduced_cache.floor != self.include_incoherent:
+                raise ValueError("reduced cache floor setting does not match the sampler")
+        if (
+            self.form_factor != "none"
+            and not FINITE_SIZE_PRODUCTION_ENABLED
+            and not bool(validation_only)
+        ):
             raise RuntimeError(
                 "finite-size detector production is blocked; "
                 "FINITE_SIZE_PRODUCTION_ENABLED is False"
@@ -1804,6 +1930,7 @@ class PofxCache:
         self.p_step = float(p_step)
         self.segment_step = float(segment_step)
         self.cut_step = float(cut_step)
+        self.validation_only = bool(validation_only)
         if min(self.p_step, self.segment_step, self.cut_step) <= 0.0:
             raise ValueError("cache steps must be positive")
         self._cache = {}
@@ -1811,6 +1938,26 @@ class PofxCache:
         self._kink_cache = {}
         self.max_clipped = 0.0
         self.local_kink_fallbacks = 0
+
+    def _accepted_moments(self, chi_c2, B, cut, components):
+        if self.form_factor == "none":
+            return radial_moments(chi_c2, B, cut, nmax=self.nmax)
+        if self.reduced_cache is None:
+            return transform_moments_finite_size(
+                chi_c2, B, cut, components, self.form_factor,
+                include_incoherent=self.include_incoherent,
+            )
+        scale = math.sqrt(float(chi_c2) * float(B))
+        rho = finite_size_rho(chi_c2, B, components)
+        eta_cut = float(cut) / scale
+        Fc = self.reduced_cache.cdf_at(B, rho, eta_cut)
+        M2 = scale**2 * self.reduced_cache.truncated_moment(
+            B, rho, eta_cut, 2
+        )
+        M4 = scale**4 * self.reduced_cache.truncated_moment(
+            B, rho, eta_cut, 4
+        )
+        return Fc, M2, M4
 
     def _key(self, p, seg_cm, cut):
         mats = ("Al", "Cu", "Pb", "Cu", "Al")
@@ -1846,16 +1993,18 @@ class PofxCache:
                         tol=self.tol,
                         nmax=self.nmax,
                         screening_weight=self.screening_weight,
-                        form_factor=self.form_factor,
+                        form_factor=(
+                            "none" if self.reduced_cache is not None
+                            else self.form_factor
+                        ),
+                        include_incoherent=self.include_incoherent,
                     )
                 base = self._path_cache[path_key]
-                Fc, M2, M4 = radial_moments(
+                Fc, M2, M4 = self._accepted_moments(
                     base["chi_c2"],
                     base["B"],
                     cc,
-                    nmax=self.nmax,
-                    tail_components=base["tail_components"],
-                    form_factor=self.form_factor,
+                    base["tail_components"],
                 )
                 trms = math.sqrt(max(M2, 0.0))
                 r = dict(base)
@@ -1927,9 +2076,15 @@ class PofxCache:
             self.max_clipped = max(self.max_clipped, clipped)
             if self.form_factor == "none":
                 eta = radial_eta_from_uniform(B, uniform[idx], nmax=self.nmax)
+            elif self.reduced_cache is not None:
+                rho = finite_size_rho(c2, B, r["tail_components"])
+                eta = self.reduced_cache.sample_eta(
+                    B, rho, float(cut) / math.sqrt(c2 * B), uniform[idx]
+                )
             else:
                 eta = finite_size_eta_from_uniform(
-                    c2, B, uniform[idx], r["tail_components"], self.form_factor
+                    c2, B, uniform[idx], r["tail_components"], self.form_factor,
+                    include_incoherent=self.include_incoherent,
                 )
             theta = math.sqrt(c2 * B) * eta
             tx[idx] = theta * np.cos(azimuth[idx])
@@ -1953,7 +2108,8 @@ class PofxCache:
             tol=self.tol,
             nmax=self.nmax,
             screening_weight=self.screening_weight,
-            form_factor=self.form_factor,
+            form_factor=("none" if self.reduced_cache is not None else self.form_factor),
+            include_incoherent=self.include_incoherent,
         )
         parts, centroids = split_path_equal_dchi_c2(path, pp, int(n_kinks))
         local = []
@@ -1968,7 +2124,11 @@ class PofxCache:
                     nmax=self.nmax,
                     screening_weight=self.screening_weight,
                     # Local n<=2 Moliere increments must retain their additive
-                    form_factor=self.form_factor,
+                    form_factor=(
+                        "none" if self.reduced_cache is not None
+                        else self.form_factor
+                    ),
+                    include_incoherent=self.include_incoherent,
                 )
             except ValueError:
                 # Extremely short grazing paths can fall below the formal
@@ -2037,6 +2197,14 @@ class PofxCache:
                 )
                 if self.form_factor == "none":
                     eta = radial_eta_from_uniform(B, uniform[idx, j], nmax=self.nmax)
+                elif self.reduced_cache is not None:
+                    rho = finite_size_rho(c2, B, r["tail_components"])
+                    eta = self.reduced_cache.sample_eta(
+                        B,
+                        rho,
+                        float(cut) / math.sqrt(c2 * B),
+                        uniform[idx, j],
+                    )
                 else:
                     eta = finite_size_eta_from_uniform(
                         c2,
@@ -2044,6 +2212,7 @@ class PofxCache:
                         uniform[idx, j],
                         r["tail_components"],
                         self.form_factor,
+                        include_incoherent=self.include_incoherent,
                     )
                 theta = math.sqrt(c2 * B) * eta
                 tx[idx, j] = theta * np.cos(azimuth[idx, j])

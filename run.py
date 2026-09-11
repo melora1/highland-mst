@@ -47,6 +47,8 @@ def main():
     p.add_argument("--theta-cut", type=float, default=THETA_CUT)
     p.add_argument("--n-kinks", type=int, default=1)
     p.add_argument("--form-factor", choices=FORM_FACTOR_MODELS, default="none")
+    p.add_argument("--reduced-cache")
+    p.add_argument("--floor", choices=("on", "off"), default="on")
     p.add_argument("--p-cache-step", type=float, default=P_CACHE_STEP)
     p.add_argument("--segment-cache-step", type=float, default=SEG_CACHE_STEP)
     p.add_argument("--cut-cache-step", type=float, default=CUT_CACHE_STEP)
@@ -58,6 +60,8 @@ def main():
     p.add_argument("--theta-cut", type=float, default=THETA_CUT)
     p.add_argument("--n-kinks", type=int, default=1)
     p.add_argument("--form-factor", choices=FORM_FACTOR_MODELS, default="none")
+    p.add_argument("--reduced-cache")
+    p.add_argument("--floor", choices=("on", "off"), default="on")
 
     p = sub.add_parser("analyze")
     p.add_argument("file")
@@ -66,6 +70,8 @@ def main():
     p.add_argument("--theta-cut", type=float, default=THETA_CUT)
     p.add_argument("--min-count", type=int, default=MIN_VOX_COUNT)
     p.add_argument("--form-factor", choices=FORM_FACTOR_MODELS, default="none")
+    p.add_argument("--reduced-cache")
+    p.add_argument("--floor", choices=("on", "off"), default="on")
 
     p = sub.add_parser("postprocess")
     p.add_argument("outdirs", nargs="+", help="existing result directories containing images.npz")
@@ -86,6 +92,8 @@ def main():
     p.add_argument("--theta-cut", type=float, default=THETA_CUT)
     p.add_argument("--n-kinks", type=int, default=1)
     p.add_argument("--form-factor", choices=FORM_FACTOR_MODELS, default="none")
+    p.add_argument("--reduced-cache")
+    p.add_argument("--floor", choices=("on", "off"), default="on")
 
     a = ap.parse_args()
     if a.cmd == "theory":
@@ -99,6 +107,8 @@ def main():
         cache = PofxCache(
             nmax=2,
             form_factor=a.form_factor,
+            include_incoherent=a.floor == "on",
+            reduced_cache=a.reduced_cache,
             p_step=a.p_cache_step,
             segment_step=a.segment_cache_step,
             cut_step=a.cut_cache_step,
@@ -119,7 +129,10 @@ def main():
     if a.cmd == "gradient":
         out = Path(a.out)
         out.mkdir(parents=True, exist_ok=True)
-        cache = PofxCache(nmax=2, form_factor=a.form_factor)
+        cache = PofxCache(
+            nmax=2, form_factor=a.form_factor,
+            include_incoherent=a.floor == "on", reduced_cache=a.reduced_cache,
+        )
         df, cache = simulate_gradient_exposure(
             a.n_per_cell,
             a.seed,
@@ -135,7 +148,10 @@ def main():
 
     if a.cmd == "analyze":
         df = load_events(a.file)
-        cache = PofxCache(nmax=2, form_factor=a.form_factor)
+        cache = PofxCache(
+            nmax=2, form_factor=a.form_factor,
+            include_incoherent=a.floor == "on", reduced_cache=a.reduced_cache,
+        )
         if a.gradient:
             analyze_gradient(df, a.out, cache=cache, theta_cut=a.theta_cut)
         else:
@@ -189,7 +205,10 @@ def main():
         plot_theory(t)
         e = root / "equal"
         e.mkdir(exist_ok=True)
-        cache = PofxCache(nmax=2, form_factor=a.form_factor)
+        cache = PofxCache(
+            nmax=2, form_factor=a.form_factor,
+            include_incoherent=a.floor == "on", reduced_cache=a.reduced_cache,
+        )
         df, cache = simulate_equal_exposure(
             a.n_per_setting,
             a.seed,
@@ -202,7 +221,10 @@ def main():
         plot_images(e)
         g = root / "gradient"
         g.mkdir(exist_ok=True)
-        cacheg = PofxCache(nmax=2, form_factor=a.form_factor)
+        cacheg = PofxCache(
+            nmax=2, form_factor=a.form_factor,
+            include_incoherent=a.floor == "on", reduced_cache=a.reduced_cache,
+        )
         dg, cacheg = simulate_gradient_exposure(
             a.n_per_cell,
             a.seed,

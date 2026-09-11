@@ -1,7 +1,7 @@
 // mstSim.cc -- single-slab Geant4 transport benchmark.
 //
 // Fires a monoenergetic mu- beam through one material slab and records each
-// primary exit angle (theta_space, rad), exactly the input expected by
+// primary exit angles (theta_space, theta_x, theta_y; rad), exactly the input expected by
 // ../geant4_compare.py.
 //
 // Usage:

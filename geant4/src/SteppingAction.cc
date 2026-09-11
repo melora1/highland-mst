@@ -30,7 +30,9 @@ void SteppingAction::UserSteppingAction(const G4Step* step) {
     // theta_space relative to the beam axis (0,0,1); dir.z() > 0 always for
     // a forward-going primary at these momenta, so acos is well-defined.
     G4double theta = std::acos(std::min(1.0, std::max(-1.0, dir.z())));
-    fRunAction->WriteTheta(theta);  // rad, Geant4's native angle unit
+    G4double thetaX = std::atan2(dir.x(), dir.z());
+    G4double thetaY = std::atan2(dir.y(), dir.z());
+    fRunAction->WriteAngles(theta, thetaX, thetaY);  // rad
     const_cast<G4Track*>(track)->SetTrackStatus(fStopAndKill);
   }
 }

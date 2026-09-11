@@ -19,28 +19,86 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import minimize_scalar
+from scipy.special import ndtr
 
 from analysis import AXIAL_ORDERED, OFFCU_ORDERED, PATHS
 from config import MATERIALS
-from physics import Layer, calibrate_pofx, constant_calibration
+from physics import (
+    HBARC_MEV_FM,
+    Layer,
+    calibrate_pofx,
+    constant_calibration,
+    nuclear_radius_fm,
+    _constant_transform_calibration,
+    _normalize_ff_model,
+)
 
 PATH_ORDERED = {"AlCu": AXIAL_ORDERED, "Al25": OFFCU_ORDERED}
 
 
-def load_angles(path):
+def load_exit_angles(path):
     p = Path(path)
     if p.suffix.lower() == ".csv":
         d = pd.read_csv(p)
         if "theta_space" not in d.columns:
             raise ValueError(f"{p}: CSV needs theta_space column")
         a = d.theta_space.to_numpy(float)
+        tx = d.theta_x.to_numpy(float) if "theta_x" in d else None
+        ty = d.theta_y.to_numpy(float) if "theta_y" in d else None
     else:
-        a = np.loadtxt(p)
-        a = a[:, 0].astype(float) if a.ndim > 1 else np.asarray(a, float)
-    a = a[np.isfinite(a) & (a >= 0.0)]
+        raw = np.loadtxt(p)
+        if raw.ndim > 1:
+            a = raw[:, 0].astype(float)
+            tx = raw[:, 1].astype(float) if raw.shape[1] >= 3 else None
+            ty = raw[:, 2].astype(float) if raw.shape[1] >= 3 else None
+        else:
+            a = np.asarray(raw, float)
+            tx = ty = None
+    keep = np.isfinite(a) & (a >= 0.0)
+    if tx is not None and ty is not None:
+        keep &= np.isfinite(tx) & np.isfinite(ty)
+        tx, ty = tx[keep], ty[keep]
+    a = a[keep]
     if a.size == 0:
         raise ValueError(f"{p}: no finite non-negative exit angles")
-    return a
+    return a, tx, ty
+
+
+def load_angles(path):
+    """Backward-compatible radial-angle loader."""
+    return load_exit_angles(path)[0]
+
+
+def projected_gaussian_fit(theta_x, theta_y, central_fraction=0.98):
+    """Truncated-normal MLE for the central projected-angle fraction."""
+    if theta_x is None or theta_y is None:
+        return dict(sigma=np.nan, cut=np.nan, n=0, central_fraction=central_fraction)
+    values = np.concatenate((np.asarray(theta_x, float), np.asarray(theta_y, float)))
+    cut = float(np.quantile(np.abs(values), float(central_fraction)))
+    central = values[np.abs(values) <= cut]
+    scale = float(np.std(central, ddof=0))
+    if not (cut > 0.0 and scale > 0.0):
+        return dict(sigma=np.nan, cut=cut, n=int(central.size), central_fraction=central_fraction)
+
+    def objective(log_sigma):
+        sigma = math.exp(float(log_sigma))
+        mass = 2.0 * ndtr(cut / sigma) - 1.0
+        return (
+            central.size * math.log(sigma)
+            + float(np.sum(central * central)) / (2.0 * sigma * sigma)
+            + central.size * math.log(max(mass, np.finfo(float).tiny))
+        )
+
+    fit = minimize_scalar(
+        objective,
+        bounds=(math.log(0.25 * scale), math.log(4.0 * scale)),
+        method="bounded",
+    )
+    return dict(
+        sigma=math.exp(float(fit.x)), cut=cut, n=int(central.size),
+        central_fraction=float(central_fraction), fit_success=bool(fit.success),
+    )
 
 
 def sample_moments(a, cut, n_generated=None):
@@ -82,10 +140,17 @@ def make_model_spec(args):
     return path, PATHS[path], PATH_ORDERED[path]
 
 
-def calibrator(X, ordered, p, energy_loss):
+def calibrator(X, ordered, p, energy_loss, ff_model, floor):
+    model = _normalize_ff_model(ff_model)
     if energy_loss:
-        return lambda cut: calibrate_pofx(ordered, p, theta_cut=float(cut))
-    return lambda cut: constant_calibration(X, p, theta_cut=float(cut))
+        from physics import calibrate_pofx_transform
+        return lambda cut: calibrate_pofx_transform(
+            ordered, p, theta_cut=float(cut), form_factor=model,
+            include_incoherent=bool(floor),
+        )
+    return lambda cut: _constant_transform_calibration(
+        X, p, float(cut), model, bool(floor)
+    )
 
 
 def model_core_and_theta0(base, energy_loss):
@@ -129,6 +194,36 @@ def band_decomposition(angles, model_at, theta0, bands, n_generated=None):
     return rows
 
 
+def band_decomposition_pairs(angles, model_at, theta0, band_pairs, n_generated=None):
+    """Band decomposition for explicit pairs, permitting collapsed low-u bands."""
+    angles = np.asarray(angles, float)
+    denom = int(n_generated) if n_generated is not None else angles.size
+    cumulative = {}
+    for edge in sorted({float(x) for pair in band_pairs for x in pair}):
+        if edge <= 0.0:
+            cumulative[edge] = (0.0, 0.0)
+        else:
+            q = model_at(edge * theta0)
+            cumulative[edge] = (float(q["Fc"]), float(q["Fc"] * q["M2"]))
+    rows = []
+    for lo, hi in band_pairs:
+        if hi <= lo:
+            continue
+        low, high = lo * theta0, hi * theta0
+        mask = (angles >= low) & (angles < high)
+        Fc_lo, num_lo = cumulative[lo]
+        Fc_hi, num_hi = cumulative[hi]
+        rows.append(dict(
+            u_lo=lo, u_hi=hi, theta_lo=low, theta_hi=high,
+            prob_g4=float(np.sum(mask) / denom), prob_model=Fc_hi-Fc_lo,
+            m2_numerator_g4=float(np.sum(angles[mask]**2) / denom),
+            m2_numerator_model=num_hi-num_lo,
+            m2_numerator_diff_model_minus_g4=(num_hi-num_lo)
+            - float(np.sum(angles[mask]**2) / denom),
+        ))
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--file", action="append", required=True, help="label=angles.txt; repeat for each reference-list/configuration label")
@@ -138,9 +233,11 @@ def main():
     ap.add_argument("--thickness-cm", type=float, default=None)
     ap.add_argument("--p", type=float, required=True)
     ap.add_argument("--energy-loss", action="store_true", help="compare against segmented p(X); default is constant-p")
+    ap.add_argument("--ff-model", choices=("point", "gauss", "sphere"), required=True)
+    ap.add_argument("--floor", choices=("on", "off"), required=True)
     ap.add_argument("--k", type=float, nargs="+", default=[2, 5, 10, 20, 40])
     ap.add_argument("--theta-cut-mrad", type=float, nargs="+", default=[200.0], help="physical angular cuts to evaluate in addition to --k")
-    ap.add_argument("--u-bands", type=float, nargs="+", default=[0, 3, 10, 20, 40, 80], help="finite reduced-angle edges for M2 band decomposition")
+    ap.add_argument("--u-bands", type=float, nargs="+", default=None, help="optional reduced-angle edges; default uses theta_FF/theta_nuc per run")
     ap.add_argument("--n-generated", type=int, default=None, help="number of primaries; permits exit fraction and Fc relative to all generated events")
     ap.add_argument("--out", default=None, help="truncated-moment CSV")
     ap.add_argument("--core-out", default=None, help="core-width CSV; defaults beside --out")
@@ -153,21 +250,25 @@ def main():
             raise ValueError("--file must be label=path")
         label, path = spec.split("=", 1)
         files[label] = path
-    data = {lab: load_angles(f) for lab, f in files.items()}
+    data = {lab: load_exit_angles(f) for lab, f in files.items()}
 
     target_label, X, ordered = make_model_spec(a)
-    model_at = calibrator(X, ordered, a.p, a.energy_loss)
+    floor = a.floor == "on"
+    model_at = calibrator(X, ordered, a.p, a.energy_loss, a.ff_model, floor)
     base = model_at(0.2)
     model_core, theta0 = model_core_and_theta0(base, a.energy_loss)
 
     core_rows = []
-    for lab, ang in data.items():
+    for lab, (ang, theta_x, theta_y) in data.items():
         # For a Rayleigh radial core h(theta)=2 theta/s^2 exp(-theta^2/s^2),
         # median = s*sqrt(ln 2) and s is the radial Gaussian-core RMS.
         core_g4 = float(np.median(ang) / math.sqrt(math.log(2.0)))
+        projected = projected_gaussian_fit(theta_x, theta_y, 0.98)
         core_rows.append(
             dict(
                 transport=lab,
+                ff_model=a.ff_model,
+                floor=floor,
                 target=target_label,
                 p=a.p,
                 n_exit=ang.size,
@@ -176,18 +277,49 @@ def main():
                 theta_space_model=model_core,
                 theta_space_g4_median=core_g4,
                 core_frac_model_over_g4=model_core / core_g4 - 1.0,
+                projected_fit_fraction=projected["central_fraction"],
+                projected_fit_n=projected["n"],
+                projected_fit_cut=projected["cut"],
+                theta0_model=theta0,
+                theta0_g4_projected_fit=projected["sigma"],
+                theta0_frac_model_over_g4=(
+                    theta0 / projected["sigma"] - 1.0
+                    if np.isfinite(projected["sigma"]) and projected["sigma"] > 0.0
+                    else np.nan
+                ),
             )
         )
 
     rows = []
     band_rows = []
-    bands = sorted(set(float(x) for x in a.u_bands))
-    if len(bands) < 2 or bands[0] < 0:
-        raise ValueError("--u-bands needs at least two non-negative edges")
-    for lab, ang in data.items():
+    if a.u_bands is not None:
+        bands = sorted(set(float(x) for x in a.u_bands))
+        if len(bands) < 2 or bands[0] < 0:
+            raise ValueError("--u-bands needs at least two non-negative edges")
+        band_pairs = list(zip(bands[:-1], bands[1:]))
+    else:
+        if a.material is None:
+            raise ValueError("automatic FF bands require --material")
+        theta_ff = HBARC_MEV_FM / (
+            1000.0 * a.p * nuclear_radius_fm(MATERIALS[a.material].A)
+        )
+        theta_nuc = HBARC_MEV_FM / (1000.0 * a.p * 0.84)
+        u_ff, u_nuc = theta_ff / theta0, theta_nuc / theta0
+        u_max = max(float(max(np.max(value[0]) for value in data.values()) / theta0), u_nuc)
+        requested = [
+            (0.0, 1.0), (1.0, 3.0), (3.0, 0.5*u_ff),
+            (0.5*u_ff, 2.0*u_ff), (2.0*u_ff, u_nuc), (u_nuc, u_max),
+        ]
+        band_pairs = [(lo, hi) for lo, hi in requested if hi > lo]
+    for lab, (ang, _theta_x, _theta_y) in data.items():
         band_rows.extend(
-            dict(transport=lab, target=target_label, p=a.p, **r)
-            for r in band_decomposition(ang, model_at, theta0, bands, a.n_generated)
+            dict(
+                transport=lab, ff_model=a.ff_model, floor=floor,
+                target=target_label, p=a.p, **r
+            )
+            for r in band_decomposition_pairs(
+                ang, model_at, theta0, band_pairs, a.n_generated
+            )
         )
         cuts = [("reduced_k", float(k) * theta0, float(k)) for k in a.k]
         cuts += [("physical", float(mrad) * 1e-3, float(mrad) * 1e-3 / theta0) for mrad in a.theta_cut_mrad]
@@ -208,6 +340,8 @@ def main():
             rows.append(
                 dict(
                     transport=lab,
+                    ff_model=a.ff_model,
+                    floor=floor,
                     target=target_label,
                     p=a.p,
                     energy_loss=bool(a.energy_loss),

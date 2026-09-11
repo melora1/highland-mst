@@ -51,10 +51,13 @@ from physics import (
     reduced_parameters,
     split_path_equal_dchi_c2,
     theta0_highland,
+    transform_moments_finite_size,
     transform_moments_g1,
+    untruncated_finite_size_moments,
     validate_stopping_minima,
 )
 from sampling import TransformSampler
+from reduced_cache import ReducedSamplerCache
 from simulation import (
     momentum_fractions,
     nominal_target_offset_cm,
@@ -215,6 +218,26 @@ def finite_form_factor_is_inside_transform_and_normalized():
     sphere = constant_calibration(PATHS["AlCu"], 6.0, form_factor="uniform_sphere")
     assert gauss["M2"] < point["M2"] and sphere["M2"] < point["M2"]
     assert abs(gauss["epsilon"] - sphere["epsilon"]) > 0.0
+
+
+@test
+def finite_size_high_eta_moment_is_bounded_by_full_cumulant():
+    path = layers_from_segment_thicknesses([5.0, 15.0, 0.0, 0.0, 5.0])
+    q = calibrate_pofx(path, 6.0, form_factor="none")
+    full_M2, _ = untruncated_finite_size_moments(
+        q["chi_c2"], q["B"], q["tail_components"], "gaussian"
+    )
+    scale = math.sqrt(q["chi_c2"] * q["B"])
+    accepted = []
+    for eta in (12.0, 40.0, 100.0, 250.0):
+        _, M2, _ = transform_moments_finite_size(
+            q["chi_c2"], q["B"], eta * scale,
+            q["tail_components"], "gaussian",
+        )
+        accepted.append(M2)
+    assert np.all(np.diff(accepted) >= 0.0)
+    assert all(value <= full_M2 * (1.0 + 1.0e-10) for value in accepted)
+    assert abs(accepted[-1] / full_M2 - 1.0) < 1.0e-5
 
 
 @test
@@ -523,6 +546,63 @@ def event_mean_scalar_excludes_empty_reference_paths():
     assert np.isfinite(weights["eps_event"][0])
     assert np.isnan(weights["eps_event"][1])
     assert weights["eps_bar_event_mean"] == weights["eps_event"][0]
+
+
+@test
+def reduced_cache_interpolates_smooth_coordinates_and_rejects_extrapolation():
+    B = np.array([10.0, 20.0])
+    rho = np.array([0.5, 2.0])
+    u = np.array([0.0, 0.5, 0.9, 0.999])
+    inverse = np.empty((2, 2, len(u)))
+    shape = np.sqrt(-np.log1p(-u))
+    for i, bb in enumerate(B):
+        for j, rr in enumerate(rho):
+            inverse[i, j] = shape * (1.0 + 1.0 / bb + math.log(rr))
+    cache = ReducedSamplerCache(B, rho, u, inverse, "gaussian", True)
+    draws = cache.sample_eta(15.0, 1.0, 2.0, np.array([0.1, 0.5, 0.9]))
+    assert np.all(np.isfinite(draws)) and np.all(draws <= 2.0)
+    dense = cache.sample_eta(15.0, 1.0, 0.35, np.linspace(0.0, 1.0, 1000))
+    assert np.max(dense) <= 0.35
+    for bb, rr in ((9.9, 1.0), (15.0, 2.1)):
+        try:
+            cache.sample_eta(bb, rr, 2.0, np.array([0.5]))
+        except RuntimeError as exc:
+            assert "outside" in str(exc)
+        else:
+            raise AssertionError("reduced cache silently extrapolated")
+
+
+@test
+def reduced_cache_production_sampling_applies_runtime_truncation():
+    class TruncationSpy:
+        ff_model = "gaussian"
+        floor = True
+
+        def __init__(self):
+            self.calls = []
+
+        def sample_eta(self, B, rho, eta_cut, uniform):
+            self.calls.append((B, rho, eta_cut, np.asarray(uniform).copy()))
+            return np.full(np.asarray(uniform).shape, 0.5 * eta_cut)
+
+        def cdf_at(self, B, rho, eta_cut):
+            return 0.9
+
+        def truncated_moment(self, B, rho, eta_cut, power):
+            return (0.5 * eta_cut) ** power
+
+    spy = TruncationSpy()
+    cache = PofxCache(
+        form_factor="gaussian", reduced_cache=spy, validation_only=True
+    )
+    segments = np.asarray([[5.0, 15.0, 0.0, 0.0, 5.0]])
+    tx, ty = cache.sample(
+        np.asarray([1.0]), segments, np.random.default_rng(123), cut=0.01
+    )
+    assert len(spy.calls) == 1
+    _, _, eta_cut, _ = spy.calls[0]
+    assert np.hypot(tx[0], ty[0]) <= 0.01
+    assert eta_cut > 0.0
 
 
 

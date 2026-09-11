@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 
 import numpy as np
 from scipy.integrate import cumulative_trapezoid
@@ -11,6 +12,7 @@ from scipy.interpolate import PchipInterpolator
 from config import THETA_CUT
 from physics import (
     _normalize_ff_model,
+    _constant_transform_calibration,
     _validation_path,
     calibrate_pofx_transform,
     transform_radial_density,
@@ -33,7 +35,8 @@ class TransformSampler:
         if not (0.0 < self.theta_cut <= 10.0):
             raise ValueError("theta_cut must lie in (0, 10] rad")
         self._model = _normalize_ff_model(ff_model)
-        self._path = _validation_path(path)
+        self._constant_X = dict(path) if isinstance(path, Mapping) else None
+        self._path = None if self._constant_X is not None else _validation_path(path)
         momenta = np.atleast_1d(np.asarray(p_profile, float))
         if momenta.ndim != 1 or momenta.size == 0 or np.any(momenta <= 0.0):
             raise ValueError("p_profile must contain positive incident momenta")
@@ -46,13 +49,19 @@ class TransformSampler:
         h = np.zeros_like(theta)
         references = []
         for p_GeV in momenta:
-            q = calibrate_pofx_transform(
-                self._path,
-                float(p_GeV),
-                self.theta_cut,
-                form_factor=self._model,
-                include_incoherent=self.floor,
-            )
+            if self._constant_X is None:
+                q = calibrate_pofx_transform(
+                    self._path,
+                    float(p_GeV),
+                    self.theta_cut,
+                    form_factor=self._model,
+                    include_incoherent=self.floor,
+                )
+            else:
+                q = _constant_transform_calibration(
+                    self._constant_X, float(p_GeV), self.theta_cut,
+                    self._model, self.floor,
+                )
             references.append(q)
             h[1:] += transform_radial_density(
                 positive,
