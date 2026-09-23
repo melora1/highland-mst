@@ -14,6 +14,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.ticker import NullFormatter
+from scipy.optimize import brentq
 from scipy.stats import ks_2samp, kstest
 import numpy as np
 import pandas as pd
@@ -30,6 +31,8 @@ from analysis import (
 )
 from config import (
     CUT_CACHE_STEP,
+    M_E,
+    M_MU,
     MATERIALS,
     MIN_VOX_COUNT,
     MOMENTA,
@@ -38,6 +41,7 @@ from config import (
     THETA_CUT,
 )
 from physics import (
+    FINITE_SIZE_KERNEL_VERSION,
     HBARC_MEV_FM,
     Layer,
     PofxCache,
@@ -370,7 +374,7 @@ def task3_composition(outdir):
 
 
 def task4_tail(outdir):
-    """Generate the three-regime tail table and enforce the Cu floor gate."""
+    """Generate the tail table and check transform-to-kernel implementation."""
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
     angles = np.geomspace(10.0, 300.0, 180)
@@ -382,12 +386,11 @@ def task4_tail(outdir):
     result = _ordered_columns(pd.DataFrame(rows))
     result.to_csv(out / "tail_ratio_scan.csv", index=False)
     for (path, ff_model), group in result.groupby(["path", "ff_model"]):
-        plateau = group[
-            (group.theta_mrad >= 1.2 * group.theta_nuc_mrad)
-            & (group.theta_mrad <= 1.4 * group.theta_nuc_mrad)
+        single_scatter = group[
+            (group.theta_mrad >= 150.0) & (group.theta_mrad <= 200.0)
         ]
-        measured = float(plateau.tail_ratio.median())
-        expected = float(plateau.expected_floor.iloc[0])
+        measured = float(single_scatter.tail_ratio.median())
+        expected = float(single_scatter.expected_kernel.median())
         relative = abs(measured / expected - 1.0)
         gates.append(
             dict(
@@ -396,8 +399,9 @@ def task4_tail(outdir):
                 path=path,
                 p_GeV=6.0,
                 theta_cut_mrad=np.nan,
-                plateau_ratio=measured,
-                expected_floor=expected,
+                tail_ratio=measured,
+                expected_kernel=expected,
+                expected_floor=float(single_scatter.expected_floor.iloc[0]),
                 relative_difference=relative,
                 pass_gate=relative <= 0.20,
             )
@@ -415,49 +419,240 @@ def task4_tail(outdir):
            ylabel=r"$h(\Theta)\Theta^3/(2\chi_c^2)$")
     ax.legend(frameon=False, fontsize=8)
     fig.tight_layout()
-    _save_figure(fig, out / "three_regime_tail")
-    assert bool(gate.pass_gate.all()), "Task 4 incoherent-floor plateau gate failed"
+    _save_figure(fig, out / "finite_size_tail_implementation")
+    assert bool(gate.pass_gate.all()), "Task 4 transform/kernel implementation gate failed"
     return result, gate
 
 
 def task10_composition(outdir, eta_cut=2.713):
-    """Small-angle-valid matched-eta composition comparison at 1 GeV/c."""
+    """Small-angle-valid 6 GeV/c comparison and Pb zero-crossover scan."""
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
+    p_GeV = 6.0
     rows = []
     for ff_model, internal in (
         ("gauss", "gaussian"), ("sphere", "uniform_sphere")
     ):
         for path in SCAN_PATHS:
             base = _constant_transform_calibration(
-                PATHS[path], 1.0, THETA_CUT, internal, True
+                PATHS[path], p_GeV, THETA_CUT, internal, True
             )
             scale = math.sqrt(base["chi_c2"] * base["B"])
             cut = float(eta_cut) * scale
             q = _constant_transform_calibration(
-                PATHS[path], 1.0, cut, internal, True
+                PATHS[path], p_GeV, cut, internal, True
+            )
+            rho = finite_size_rho(
+                base["chi_c2"], base["B"], base["tail_components"]
             )
             rows.append(dict(
-                ff_model=ff_model, floor=True, path=path, p_GeV=1.0,
+                ff_model=ff_model, floor=True, path=path, p_GeV=p_GeV,
                 theta_cut_mrad=1000.0 * cut, eta_cut=float(eta_cut),
-                rho=finite_size_rho(
-                    base["chi_c2"], base["B"], base["tail_components"]
-                ),
+                rho=rho,
+                theta_FF_over_theta_space=rho * math.sqrt(base["R"] * base["B"]),
+                tan_relative_error=math.tan(cut) / cut - 1.0,
                 eps_M=q["epsilon"], eps_M_percent=100.0 * q["epsilon"],
             ))
     result = _ordered_columns(pd.DataFrame(rows))
     result.to_csv(out / "eta_2p713_composition.csv", index=False)
+
+    scan_rows = []
+    crossover_rows = []
+    eta_scan = np.linspace(1.0, 20.0, 191)
+    for ff_model, internal in (
+        ("gauss", "gaussian"), ("sphere", "uniform_sphere")
+    ):
+        base = _constant_transform_calibration(
+            PATHS["Pb15"], p_GeV, THETA_CUT, internal, True
+        )
+        scale = math.sqrt(base["chi_c2"] * base["B"])
+
+        def pb_epsilon(eta):
+            return _constant_transform_calibration(
+                PATHS["Pb15"], p_GeV, float(eta) * scale, internal, True
+            )["epsilon"]
+
+        values = np.asarray([pb_epsilon(eta) for eta in eta_scan])
+        for eta, epsilon in zip(eta_scan, values):
+            scan_rows.append(dict(
+                ff_model=ff_model, floor=True, path="Pb15", p_GeV=p_GeV,
+                theta_cut_mrad=1000.0 * eta * scale, eta_cut=eta,
+                eps_M=epsilon, eps_M_percent=100.0 * epsilon,
+            ))
+        brackets = np.flatnonzero(values[:-1] * values[1:] < 0.0)
+        exact = np.flatnonzero(values == 0.0)
+        if exact.size:
+            eta_cross = float(eta_scan[exact[0]])
+        elif brackets.size:
+            j = int(brackets[0])
+            eta_cross = float(brentq(pb_epsilon, eta_scan[j], eta_scan[j + 1]))
+        else:
+            eta_cross = np.nan
+        crossover_rows.append(dict(
+            ff_model=ff_model, floor=True, path="Pb15", p_GeV=p_GeV,
+            theta_cut_mrad=(
+                1000.0 * eta_cross * scale if np.isfinite(eta_cross) else np.nan
+            ),
+            eta_cut=eta_cross,
+            eps_M=pb_epsilon(eta_cross) if np.isfinite(eta_cross) else np.nan,
+            n_crossings_in_1_to_20=int(len(brackets) + len(exact)),
+        ))
+    scan = _ordered_columns(pd.DataFrame(scan_rows))
+    scan.to_csv(out / "pb_eta_crossover_scan.csv", index=False)
+    crossover = _ordered_columns(pd.DataFrame(crossover_rows))
+    crossover.to_csv(out / "pb_eta_crossover.csv", index=False)
+
     spreads = []
     for ff_model, group in result.groupby("ff_model"):
         values = group.set_index("path").eps_M_percent
+        cross = crossover[crossover.ff_model == ff_model].iloc[0]
         spreads.append(dict(
-            ff_model=ff_model, floor=True, path="Pb15/AlCu", p_GeV=1.0,
+            ff_model=ff_model, floor=True, path="Pb15/AlCu", p_GeV=p_GeV,
             theta_cut_mrad=np.nan, eta_cut=float(eta_cut),
             Pb_minus_AlCu_pp=values["Pb15"] - values["AlCu"],
             inversion_survives=values["Pb15"] < values["AlCu"],
+            Pb_zero_eta_cut=cross.eta_cut,
+            Pb_zero_theta_cut_mrad=cross.theta_cut_mrad,
         ))
     summary = _ordered_columns(pd.DataFrame(spreads))
     summary.to_csv(out / "eta_2p713_inversion_summary.csv", index=False)
+    return result, summary
+
+
+def revised_weight_predictions(outdir):
+    """Write the corrected B1--B3 analytic predictions before production."""
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    models = (
+        ("point", "none"),
+        ("gauss", "gaussian"),
+        ("sphere", "uniform_sphere"),
+    )
+
+    pb_rows = []
+    class_rows = []
+    for label, internal in models:
+        for p_GeV in MOMENTA:
+            reference = calibrate_pofx_transform(
+                AXIAL_PATH, p_GeV, THETA_CUT, form_factor=internal,
+                include_incoherent=True,
+            )
+            pb = calibrate_pofx_transform(
+                PB_CROSSING_PATH, p_GeV, THETA_CUT, form_factor=internal,
+                include_incoherent=True,
+            )
+            pb_rows.append(dict(
+                ff_model=label, floor=(internal != "none"), path="PbCross/AlCuRef",
+                p_GeV=p_GeV, theta_cut_mrad=1000.0 * THETA_CUT,
+                M2_pb_crossing=pb["M2"], M2_reference=reference["M2"],
+                expected_I_Q_reference=pb["M2"] / reference["M2"],
+            ))
+            for path_name, path in (("Al25", (Layer("Al", 25.0),)),
+                                    ("AlCu", AXIAL_PATH)):
+                q = calibrate_pofx_transform(
+                    path, p_GeV, THETA_CUT, form_factor=internal,
+                    include_incoherent=True,
+                )
+                class_rows.append(dict(
+                    ff_model=label, floor=(internal != "none"), path=path_name,
+                    p_GeV=p_GeV, theta_cut_mrad=1000.0 * THETA_CUT,
+                    epsilon_up=q["epsilon_mixed"],
+                    nominal_over_Q=(1.0 + q["epsilon_mixed"]) ** 2,
+                    Fc=q["Fc"],
+                ))
+
+    pb_result = _ordered_columns(pd.DataFrame(pb_rows))
+    pb_result.to_csv(out / "prediction_B1_pb_reference_ratio.csv", index=False)
+    class_result = _ordered_columns(pd.DataFrame(class_rows))
+    class_result.to_csv(out / "prediction_B2_path_class_factors.csv", index=False)
+
+    summaries = []
+    for ff_model, group in class_result.groupby("ff_model", sort=False):
+        means = group.groupby("path").nominal_over_Q.mean()
+        pb_mean = pb_result[
+            pb_result.ff_model == ff_model
+        ].expected_I_Q_reference.mean()
+        summaries.append(dict(
+            ff_model=ff_model,
+            floor=ff_model != "point",
+            path="AlCu/Al25",
+            p_GeV=np.nan,
+            theta_cut_mrad=1000.0 * THETA_CUT,
+            mean_factor_Al25=means["Al25"],
+            mean_factor_AlCu=means["AlCu"],
+            class_ratio=means["AlCu"] / means["Al25"],
+            predicted_post_scalar_residual=(
+                means["AlCu"] / means["Al25"] - 1.0
+            ),
+            predicted_c_star_reference=means["AlCu"],
+            mean_expected_I_Q_reference_in_Pb=pb_mean,
+        ))
+    summary = _ordered_columns(pd.DataFrame(summaries))
+    summary.to_csv(out / "prediction_B1_B2_B3_summary.csv", index=False)
+    return pb_result, class_result, summary
+
+
+def nominal_reduction_error(outdir):
+    """Measure the two-parameter reduction error on nominal p(X) paths.
+
+    The comparator is the cache's canonical pure-Cu two-parameter family at the
+    same ``(B, rho)``.  This isolates the information discarded when material
+    mixture and the local momentum profile are collapsed into one effective
+    onset coordinate; it is not an interpolation test.
+    """
+    from reduced_cache import _canonical_components
+
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "Al25": (Layer("Al", 25.0),),
+        "Cu15": (Layer("Cu", 15.0),),
+        "AlCu": AXIAL_PATH,
+        "Pb15": (Layer("Pb", 15.0),),
+    }
+    rows = []
+    for path_name, path in paths.items():
+        for p_GeV in MOMENTA:
+            for ff_model in ("gaussian", "uniform_sphere"):
+                direct = calibrate_pofx_transform(
+                    path, p_GeV, THETA_CUT, form_factor=ff_model,
+                    include_incoherent=True,
+                )
+                B = direct["B"]
+                scale = math.sqrt(direct["chi_c2"] * B)
+                rho = finite_size_rho(
+                    direct["chi_c2"], B, direct["tail_components"]
+                )
+                eta_cut = THETA_CUT / scale
+                _, canonical_mu2, _ = transform_moments_finite_size(
+                    1.0 / B,
+                    B,
+                    eta_cut,
+                    _canonical_components(rho),
+                    ff_model,
+                    include_incoherent=True,
+                )
+                epsilon_reduced = (
+                    scale * math.sqrt(canonical_mu2)
+                    / direct["theta_space_pofx"] - 1.0
+                )
+                delta = epsilon_reduced - direct["epsilon_matched"]
+                rows.append(dict(
+                    ff_model=ff_model, floor=True, path=path_name,
+                    p_GeV=p_GeV, theta_cut_mrad=1000.0 * THETA_CUT,
+                    B=B, rho=rho, eta_cut=eta_cut,
+                    epsilon_direct=direct["epsilon_matched"],
+                    epsilon_two_parameter=epsilon_reduced,
+                    delta_epsilon_pp=100.0 * delta,
+                    pass_0p01pp=abs(100.0 * delta) < 0.01,
+                ))
+    result = _ordered_columns(pd.DataFrame(rows))
+    result.to_csv(out / "nominal_path_reduction_error.csv", index=False)
+    summary = result.groupby(["ff_model", "path"], as_index=False).agg(
+        max_abs_delta_epsilon_pp=("delta_epsilon_pp", lambda x: np.max(np.abs(x))),
+        pass_0p01pp=("pass_0p01pp", "all"),
+    )
+    summary.to_csv(out / "nominal_path_reduction_summary.csv", index=False)
     return result, summary
 
 
@@ -784,7 +979,7 @@ def finite_size_decision_gates(outdir):
 
 
 def finite_size_analytic_completion(outdir):
-    """Composition, transform collapse, and three-regime tail deliverables."""
+    """Composition, transform collapse, and finite-size tail deliverables."""
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
     paths = {
@@ -913,9 +1108,9 @@ def finite_size_analytic_completion(outdir):
     axes[0].set_ylabel(r"$h(\Theta)\Theta^3/(2\chi_c^2)$")
     axes[0].legend(frameon=False, fontsize=8, title="solid: h ratio\ndashed: G")
     fig.tight_layout()
-    _save_figure(fig, out / "three_regime_tail")
+    _save_figure(fig, out / "finite_size_tail")
     tail = pd.DataFrame(tail_rows)
-    tail.to_csv(out / "three_regime_tail.csv", index=False)
+    tail.to_csv(out / "finite_size_tail.csv", index=False)
     return composition, collapse, collapse_summary, tail
 
 
@@ -1278,12 +1473,13 @@ def _task9_floor_coordinates(components, scale):
     """
     rows = tuple(components)
     floor_height = sum(
-        frac * A / (Z * (Z + 1.0)) for frac, Z, A, _ in rows
+        frac / (Z + 1.0) for frac, Z, _, _ in rows
     )
     proton_scale = math.exp(
         sum(frac * math.log(math.sqrt(0.71) / p) for frac, _, _, p in rows)
     )
-    return floor_height, proton_scale / scale
+    electron_rho = (M_E / M_MU) / scale
+    return floor_height, proton_scale / scale, electron_rho
 
 
 def _weighted_quantiles(values, weights, probabilities):
@@ -1358,7 +1554,7 @@ def task9_support(event_file, outdir, n_kinks=1, dump_events=True):
         unique, first, inverse, counts = np.unique(
             keys, axis=0, return_index=True, return_inverse=True, return_counts=True
         )
-        values = np.full((len(unique), int(n_kinks), 5), np.nan, dtype=np.float64)
+        values = np.full((len(unique), int(n_kinks), 6), np.nan, dtype=np.float64)
         started = time.perf_counter()
         for i, raw_key in enumerate(unique):
             full_key = (*map(int, raw_key), int(cut_key))
@@ -1374,11 +1570,11 @@ def task9_support(event_file, outdir, n_kinks=1, dump_events=True):
                 rho = finite_size_rho(
                     q["chi_c2"], q["B"], q["tail_components"]
                 )
-                floor_height, proton_rho = _task9_floor_coordinates(
+                floor_height, proton_rho, electron_rho = _task9_floor_coordinates(
                     q["tail_components"], scale
                 )
                 values[i, kink] = (
-                    q["B"], rho, scale, floor_height, proton_rho
+                    q["B"], rho, scale, floor_height, proton_rho, electron_rho
                 )
 
         flat_unique = values.reshape(-1, values.shape[-1])
@@ -1393,6 +1589,7 @@ def task9_support(event_file, outdir, n_kinks=1, dump_events=True):
             "s": flat_unique[:, 2].astype(np.float32),
             "floor_height": flat_unique[:, 3].astype(np.float32),
             "proton_rho": flat_unique[:, 4].astype(np.float32),
+            "electron_rho": flat_unique[:, 5].astype(np.float32),
         })
         unique_dump = unique_dump[
             np.isfinite(unique_dump.B) & np.isfinite(unique_dump.rho)
@@ -1429,6 +1626,7 @@ def task9_support(event_file, outdir, n_kinks=1, dump_events=True):
                         "s": flat[:, 2].astype(np.float32),
                         "floor_height": flat[:, 3].astype(np.float32),
                         "proton_rho": flat[:, 4].astype(np.float32),
+                        "electron_rho": flat[:, 5].astype(np.float32),
                     })
                     table = pa.Table.from_pandas(chunk, preserve_index=False)
                     if writer is None:
@@ -1439,7 +1637,9 @@ def task9_support(event_file, outdir, n_kinks=1, dump_events=True):
                     writer.close()
 
         for p_set, group in unique_dump.groupby("p_set"):
-            for column in ("B", "rho", "s", "floor_height", "proton_rho"):
+            for column in (
+                "B", "rho", "s", "floor_height", "proton_rho", "electron_rho"
+            ):
                 a = group[column].to_numpy(float)
                 quantiles = _weighted_quantiles(
                     a, group["count"].to_numpy(float),
@@ -1603,6 +1803,7 @@ def task9_build_cache(
     cache.save(out_file)
     metadata = pd.DataFrame([dict(
         ff_model=ff_model, floor=bool(floor),
+        kernel_version=FINITE_SIZE_KERNEL_VERSION,
         n_kinks=";".join(map(str, sorted(set(kink_counts)))),
         axis_grid="uniform_plus_weighted_quantiles",
         n_B=len(B_grid), n_rho=len(rho_grid), n_u=len(cache.u_grid),
@@ -1666,13 +1867,45 @@ def task9_validate_cache(
     weights /= weights.sum()
     rng = np.random.default_rng(int(seed))
     chosen = []
-    for raw in rng.choice(len(support), size=max(20 * int(n_points), 2000), p=weights):
-        row = support.iloc[int(raw)]
+    chosen_indices = set()
+
+    def add_off_node(raw):
+        raw = int(raw)
+        if raw in chosen_indices:
+            return
+        row = support.iloc[raw]
         if (
             np.min(np.abs(reduced.B_grid - row.B)) > 1.0e-8
             and np.min(np.abs(reduced.rho_grid - row.rho)) > 1.0e-8
         ):
             chosen.append(row)
+            chosen_indices.add(raw)
+
+    # Frequency-weighted random probes alone sample only the populated core and
+    # can miss the four-decade rho tail.  Reserve part of the fixed-size gate for
+    # deterministic empirical-boundary coverage in the interpolation coordinates
+    # (1/B, ln rho), including the exact extrema and a 5x5 support-spanning mesh.
+    for column in ("B", "rho"):
+        add_off_node(support[column].idxmin())
+        add_off_node(support[column].idxmax())
+    coordinates = np.column_stack((
+        1.0 / support.B.to_numpy(float),
+        np.log(support.rho.to_numpy(float)),
+    ))
+    lo = coordinates.min(axis=0)
+    span = coordinates.max(axis=0) - lo
+    normalized = (coordinates - lo) / np.where(span > 0.0, span, 1.0)
+    for x in np.linspace(0.0, 1.0, 5):
+        for y in np.linspace(0.0, 1.0, 5):
+            distance2 = (normalized[:, 0] - x) ** 2 + (normalized[:, 1] - y) ** 2
+            for raw in np.argsort(distance2):
+                before = len(chosen)
+                add_off_node(raw)
+                if len(chosen) > before:
+                    break
+
+    for raw in rng.choice(len(support), size=max(20 * int(n_points), 2000), p=weights):
+        add_off_node(raw)
         if len(chosen) >= int(n_points):
             break
     if len(chosen) < int(n_points):
@@ -2106,6 +2339,10 @@ def main():
     p = sub.add_parser("task10")
     p.add_argument("--out", default="out/validation/task10")
     p.add_argument("--eta-cut", type=float, default=2.713)
+    p = sub.add_parser("revised-predictions")
+    p.add_argument("--out", default="out/validation/revised_predictions")
+    p = sub.add_parser("reduction-nominal")
+    p.add_argument("--out", default="out/validation/reduction_nominal")
     p = sub.add_parser("task8-summary")
     p.add_argument("compare_dir")
     p.add_argument("--out", default="out/validation/task8")
@@ -2203,6 +2440,12 @@ def main():
         result, summary = task10_composition(a.out, eta_cut=a.eta_cut)
         print(result.to_string(index=False))
         print("\n", summary.to_string(index=False))
+    elif a.cmd == "revised-predictions":
+        _, _, summary = revised_weight_predictions(a.out)
+        print(summary.to_string(index=False))
+    elif a.cmd == "reduction-nominal":
+        _, summary = nominal_reduction_error(a.out)
+        print(summary.to_string(index=False))
     elif a.cmd == "task8-summary":
         bands, core = task8_matrix_summary(
             a.compare_dir, a.out, n_seeds=a.n_seeds

@@ -104,7 +104,7 @@ SEED_BASE = 20260713
 SPLIT_SEED = 20260819
 OUT_DIR = "out"
 
-# Enabled after all Gaussian/sphere, floor-on/off reduced caches passed the
-# empirical N=5/N=25 support, off-node M2, no-extrapolation, and performance
-# gates.  Keep this named flag greppable so production readiness is explicit.
-FINITE_SIZE_PRODUCTION_ENABLED = True
+# Closed after the proton-only floor and separate electron cutoff replaced the
+# old A/[Z(Z+1)] kernel.  Re-enable only after rebuilt caches pass interpolation
+# and real-path reduction gates for the corrected physics model.
+FINITE_SIZE_PRODUCTION_ENABLED = False

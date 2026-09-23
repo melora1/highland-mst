@@ -6,9 +6,9 @@ This directory is synchronized to the corrected manuscript source `HighlandValid
 
 The Python production study is a **controlled model-internal detector study**, not full Geant4 transport. `simulation.py` traces each event's ordered material path analytically, then samples the non-factorized radial Moliere `n<=2` distribution using the segmented `p(X)` construction in `physics.py`. The production cache steps are declared in `config.py`. The path is partitioned into equal accumulated `dchi_c^2` intervals and each kink is placed at that interval's `dchi_c^2`-weighted centroid. Tracker hits and the upstream dipole momentum tag are then smeared/reconstructed.
 
-The former 100 mrad form-factor splice is superseded and must not be used. Finite-size theory now inserts `G(q)` inside the screened-Rutherford characteristic exponent and obtains the angular law by an unexpanded Hankel transform. The kernel has `G(0)=1`, transitions to the approximate quasi-elastic nucleon floor `A/[Z(Z+1)]`, and terminates that floor with a dipole proton form factor. Gaussian and uniform-sphere nuclear shapes are both regenerated, with the floor-omitted difference reported as a systematic.
+The former 100 mrad form-factor splice is superseded and must not be used. Finite-size theory now inserts `G(q)` inside the screened-Rutherford characteristic exponent and obtains the angular law by an unexpanded Hankel transform. The kernel separates coherent nuclear, atomic-electron, and Pauli-blocked incoherent proton scattering. It has `G(0)=1`, cuts off the electron term at `theta=m_e/m_mu`, transitions to the proton-only quasi-elastic floor `1/(Z+1)`, and terminates that floor with a dipole proton form factor. Gaussian and uniform-sphere nuclear shapes are both regenerated, with the proton-floor-omitted difference reported as a systematic.
 
-The inverse-CDF sampler is generated from the transformed density. `reduced_cache.py` moves the Hankel inversion into a precomputed table in `(1/B, ln rho)`, applies truncation as `u -> u F(eta_cut)`, and raises on every support miss rather than extrapolating. Empirical five- and 25-kink support has been measured for target and reference paths: together it spans `B=3.251--16.158` and `rho=0.492--934.1`, far beyond the four nominal path values. The production grid covers `B=3.175--18.343` and `rho=0.337--1362.344`. All Gaussian/sphere, floor-on/off tables passed the 56-point off-node `M2`, exhaustive support, and sub-millisecond lookup gates, so finite-size detector production is enabled. Old finite-size detector outputs remain superseded and must be regenerated.
+The inverse-CDF sampler is generated from the transformed density. `reduced_cache.py` moves the Hankel inversion into a precomputed table in `(1/B, ln rho)`, applies truncation as `u -> u F(eta_cut)`, and raises on every support miss rather than extrapolating. Empirical five- and 25-kink support has been measured for target and reference paths: together it spans `B=3.251--16.158` and `rho=0.492--934.1`, far beyond the four nominal path values. The production grid covers `B=3.175--18.343` and `rho=0.337--1362.344`. Those caches encode the superseded nucleon-floor kernel and are now rejected by a required kernel-version field. Finite-size detector production remains gated until corrected caches pass interpolation-only and real-path reduction tests.
 
 The reference geometry replaces Pb by Cu. `geometry.py` traces exact ordered ray segments `[Al_up, Cu_up, Pb, Cu_down, Al_down]`; energy loss is not reconstructed from unordered totals.
 
@@ -78,22 +78,27 @@ python validation.py task9-support out/fine/seed0/events.parquet --n-kinks 25 --
 python validation.py task9-build out/fine/seed0/events.parquet out/validation/task9/support_k5 out/validation/task9/support_k25 --out out/validation/task9/cache_gaussian_floor_on_k5_k25_v5.npz --ff-model gaussian --floor on --n-B 70 --n-rho 70 --workers 6
 python task9_matrix.py out/fine/seed0/events.parquet out/validation/task9/cache_gaussian_floor_on_k5_k25_v5.npz out/validation/task9/support_k5 out/validation/task9/support_k25 --workers 6
 python validation.py task10 --eta-cut 2.713
+python validation.py revised-predictions
+python validation.py reduction-nominal
 python validation.py geant4-finite
 python validation.py kink-composition --n-events 200000
 ```
 
 At the small-angle-valid Task 10 acceptance, `eta_cut=2.713`, the matched-cut
-`epsilon_M` values at 1 GeV/c are:
+`epsilon_M` values at 6 GeV/c are:
 
 | form factor | Al25 | Cu15 | AlCu | Pb15 | Pb15 - AlCu |
 |---|---:|---:|---:|---:|---:|
-| Gaussian | 1.337% | -0.119% | -0.474% | -1.505% | -1.032 pp |
-| sphere | 1.322% | -0.275% | -0.630% | -1.752% | -1.122 pp |
+| Gaussian | 0.974% | -0.428% | -0.822% | -1.687% | -0.865 pp |
+| sphere | 0.959% | -0.585% | -0.980% | -1.936% | -0.956 pp |
 
 The composition inversion therefore survives the smaller reduced acceptance
-for both form factors; it is not only a large-acceptance effect.
+for both form factors; it is not only a large-acceptance effect.  Pb remains
+negative throughout the requested `1 <= eta_cut <= 20` scan, so there is no
+zero crossover to report in that interval.
 
-The completed Task 9 production-cache gates are:
+The following Task 9 results apply only to the superseded kernel and must not be
+used to authorize production:
 
 | form factor | floor | kinks | max relative M2 error | lookup (microseconds/event) | support misses |
 |---|---:|---:|---:|---:|---:|
@@ -106,7 +111,14 @@ The completed Task 9 production-cache gates are:
 | sphere | off | 5 | 0.000042 | 0.330 | 0 / 1,409,615 |
 | sphere | off | 25 | 0.000059 | 0.332 | 0 / 7,048,075 |
 
-`tests.py` currently contains 38 physics/geometry and analysis closure tests.
+The corrected-kernel nominal-path reduction check fails the 0.01 percentage-
+point gate by 0.12--1.06 percentage points.  The separate atomic-electron
+cutoff adds the reduced coordinate `rho_e=(m_e/m_mu)/s`, so a two-coordinate
+`(B,rho)` cache is mathematically insufficient even before material-mixture and
+local-`p(X)` errors are considered.  The current 2D cache builder is therefore
+blocked pending an added axis or a validated direct-sampler fallback.
+
+`tests.py` currently contains 41 physics/geometry and analysis closure tests.
 
 ## Geant4 single-slab benchmark
 

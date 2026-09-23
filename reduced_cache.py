@@ -1,9 +1,15 @@
-"""Reduced-variable inverse-CDF cache for finite-size detector sampling.
+"""Legacy two-coordinate inverse-CDF cache for finite-size sampling.
 
 The cache coordinates are ``x=1/B`` and ``y=ln(rho)``.  Its stored random
 variable is the untruncated reduced radius ``eta=theta/s``.  A physical cut is
 applied without another cache dimension by evaluating ``F(eta_cut)`` and then
 mapping a uniform variate to ``u*F(eta_cut)`` before inverse-CDF lookup.
+
+The corrected kernel has a separate atomic-electron cutoff, whose reduced
+coordinate is ``rho_e=(m_e/m_mu)/s``.  Therefore ``(B,rho)`` is not sufficient;
+new production caches must add at least that coordinate (and still validate
+material-mixture dependence).  Loading superseded caches and building new 2D
+production tables are deliberately blocked.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from scipy.integrate import cumulative_trapezoid, simpson
 from scipy.special import j1
 
 from physics import (
+    FINITE_SIZE_KERNEL_VERSION,
     HBARC_MEV_FM,
     MEV,
     MOLIERE_SCREENING_FACTOR,
@@ -162,6 +169,7 @@ def build_reduced_cache(
     templates=None,
     u_grid=None,
     workers=1,
+    allow_invalid_2d=False,
 ):
     """Return inverse-CDF nodes ``CDF^-1(u; B, rho)`` on a parameter grid.
 
@@ -171,6 +179,12 @@ def build_reduced_cache(
     effective onset is ``rho_grid[j]``.  Without templates a pure-Cu kernel is
     used; production validation supplies empirical templates.
     """
+    if not allow_invalid_2d:
+        raise RuntimeError(
+            "the corrected finite-size kernel is not a two-parameter (B, rho) "
+            "family: the electron cutoff adds rho_e=(m_e/m_mu)/s. Extend the "
+            "cache axes or use a validated direct-sampler fallback."
+        )
     model = _normalize_form_factor(ff_model)
     if model == "none":
         raise ValueError("the reduced finite-size cache requires a form factor")
@@ -224,8 +238,15 @@ class ReducedSamplerCache:
     inverse: np.ndarray
     ff_model: str
     floor: bool
+    kernel_version: str = FINITE_SIZE_KERNEL_VERSION
 
     def __post_init__(self):
+        if str(self.kernel_version) != FINITE_SIZE_KERNEL_VERSION:
+            raise RuntimeError(
+                "reduced cache uses finite-size kernel "
+                f"{self.kernel_version!r}; expected {FINITE_SIZE_KERNEL_VERSION!r}. "
+                "Rebuild the cache before finite-size production."
+            )
         self.B_grid = np.asarray(self.B_grid, float)
         self.rho_grid = np.asarray(self.rho_grid, float)
         self.u_grid = np.asarray(self.u_grid, float)
@@ -247,15 +268,22 @@ class ReducedSamplerCache:
             inverse=self.inverse,
             ff_model=np.asarray(self.ff_model),
             floor=np.asarray(self.floor),
+            kernel_version=np.asarray(self.kernel_version),
         )
 
     @classmethod
     def load(cls, path):
         with np.load(path, allow_pickle=False) as data:
+            if "kernel_version" not in data.files:
+                raise RuntimeError(
+                    "reduced cache predates the corrected proton/electron "
+                    "finite-size kernel; rebuild it before use"
+                )
             return cls(
                 B_grid=data["B_grid"], rho_grid=data["rho_grid"],
                 u_grid=data["u_grid"], inverse=data["inverse"],
                 ff_model=str(data["ff_model"]), floor=bool(data["floor"]),
+                kernel_version=str(data["kernel_version"]),
             )
 
     def _cell(self, B, rho):

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import math
 import sys
+import tempfile
+from pathlib import Path
 import numpy as np
 import pandas as pd
 
@@ -22,7 +24,16 @@ from analysis import (
     optimal_global_scale,
     roi_masks,
 )
-from config import AL_HALF, MATERIALS, MOMENTA, RADIAL_ETA_MAX, THETA_CUT, VOX_SIZE
+from config import (
+    AL_HALF,
+    M_E,
+    M_MU,
+    MATERIALS,
+    MOMENTA,
+    RADIAL_ETA_MAX,
+    THETA_CUT,
+    VOX_SIZE,
+)
 from geometry import trace_paths
 from physics import (
     Layer,
@@ -206,9 +217,9 @@ def finite_form_factor_is_inside_transform_and_normalized():
     component = ((1.0, cu.Z, cu.A, 6.0),)
     assert float(finite_size_kernel(0.0, component, "gaussian")) == 1.0
     # Between loss of nuclear coherence and proton suppression, the kernel is
-    # close to the requested A/[Z(Z+1)] nucleon floor.
-    theta = 0.040
-    expected_floor = cu.A / (cu.Z * (cu.Z + 1.0))
+    # close to the proton-only 1/(Z+1) quasi-elastic floor.
+    theta = 0.050
+    expected_floor = 1.0 / (cu.Z + 1.0)
     got = float(finite_size_kernel(theta, component, "gaussian"))
     expected = expected_floor * float(proton_form_factor_sq(theta, 6.0))
     assert abs(got / expected - 1.0) < 0.03, (got, expected)
@@ -365,10 +376,23 @@ def finite_size_sampler_matches_transform_moments():
 
 @test
 def test_G_at_zero():
+    for material in MATERIALS.values():
+        components = ((1.0, material.Z, material.A, 6.0),)
+        for ff_model in ("gaussian", "uniform_sphere"):
+            for floor in (True, False):
+                got = float(finite_size_kernel(0.0, components, ff_model, floor))
+                assert abs(got - 1.0) < 1e-12, (material, ff_model, floor, got)
+
+
+@test
+def electron_term_has_kinematic_cutoff():
     cu = MATERIALS["Cu"]
     components = ((1.0, cu.Z, cu.A, 6.0),)
-    for ff_model in ("gaussian", "uniform_sphere"):
-        assert abs(float(finite_size_kernel(0.0, components, ff_model, True)) - 1.0) < 1e-12
+    theta_e = M_E / M_MU
+    below = float(finite_size_kernel(np.nextafter(theta_e, 0.0), components,
+                                     "gaussian", True))
+    above = float(finite_size_kernel(theta_e, components, "gaussian", True))
+    assert abs((below - above) - 1.0 / (cu.Z + 1.0)) < 1e-12
 
 
 @test
@@ -387,12 +411,21 @@ def test_rho_momentum_invariance():
 
 
 @test
-def test_floor_plateau():
+def central_production_form_factor_onset_lies_inside_core():
+    rows = composition_scan(("AlCu",), MOMENTA, (200.0,), "gauss", True)
+    ratios = np.asarray([row["theta_FF_over_theta_space"] for row in rows])
+    assert np.all(ratios < 1.0), ratios
+
+
+@test
+def test_tail_matches_corrected_single_scatter_kernel():
     from physics import tail_ratio_scan
 
-    rows = tail_ratio_scan("Cu15", 6.0, "gauss", True, np.geomspace(47.0, 55.0, 25))
+    rows = tail_ratio_scan(
+        "Cu15", 6.0, "gauss", True, np.geomspace(150.0, 190.0, 25)
+    )
     measured = float(np.median([row["tail_ratio"] for row in rows]))
-    expected = rows[0]["expected_floor"]
+    expected = float(np.median([row["expected_kernel"] for row in rows]))
     assert abs(measured / expected - 1.0) <= 0.20
 
 
@@ -570,6 +603,27 @@ def reduced_cache_interpolates_smooth_coordinates_and_rejects_extrapolation():
             assert "outside" in str(exc)
         else:
             raise AssertionError("reduced cache silently extrapolated")
+
+
+@test
+def reduced_cache_rejects_pre_kernel_version_files():
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "legacy_cache.npz"
+        np.savez(
+            path,
+            B_grid=np.asarray([10.0, 11.0]),
+            rho_grid=np.asarray([0.5, 1.0]),
+            u_grid=np.asarray([0.0, 0.5]),
+            inverse=np.ones((2, 2, 2), dtype=np.float32),
+            ff_model=np.asarray("gaussian"),
+            floor=np.asarray(True),
+        )
+        try:
+            ReducedSamplerCache.load(path)
+        except RuntimeError as exc:
+            assert "predates" in str(exc)
+        else:
+            raise AssertionError("legacy reduced cache was accepted")
 
 
 @test

@@ -61,6 +61,8 @@ _LN10 = math.log(10.0)
 HBARC_MEV_FM = 197.3
 FORM_FACTOR_MODELS = ("none", "gaussian", "uniform_sphere")
 FF_MODELS = ("point", "gauss", "sphere")
+THETA_E_MAX = M_E / M_MU
+FINITE_SIZE_KERNEL_VERSION = "proton-electron-v2"
 
 
 # Moliere's B equation is written with chi_a'^2 = 1.167 chi_a^2, while the
@@ -541,14 +543,18 @@ def proton_form_factor_sq(theta, p_gev: float):
 def finite_size_kernel(theta, components, model: str, include_incoherent=True):
     """Scattering-kernel multiplier used inside the eikonal transform.
 
-    The incoherent approximation interpolates from the exact low-q
-    normalisation to an ``A |F_p|^2`` quasi-elastic nucleon floor after loss of
-    nuclear coherence:
+    The ``Z(Z+1)`` point-nucleus coefficient contains coherent nuclear and
+    atomic-electron scattering.  Finite nuclear size suppresses only the former;
+    quasi-elastic scattering survives on the ``Z`` protons, with Pauli blocking
+    represented by ``1-|F_N|^2``.  Electron scattering has the kinematic limit
+    ``theta_e,max = m_e/m_mu``:
 
-        G = |F_N|^2 + A/[Z(Z+1)] (1-|F_N|^2) |F_p|^2.
+        G = [Z^2 |F_N|^2 + Z I(theta < theta_e,max)
+             + Z (1-|F_N|^2) |F_p|^2] / [Z(Z+1)].
 
-    Thus G(0)=1, the intermediate floor is A/[Z(Z+1)], and the floor terminates
-    at the proton scale.  Omitting the second term is retained as a systematic.
+    Thus ``G(0)=1`` exactly and the intermediate quasi-elastic floor is
+    ``1/(Z+1)``.  ``include_incoherent=False`` omits only the proton term; the
+    separately modelled electron term remains present.
     """
     model = _normalize_form_factor(model)
     theta = np.asarray(theta, float)
@@ -560,9 +566,10 @@ def finite_size_kernel(theta, components, model: str, include_incoherent=True):
     out = np.zeros_like(theta)
     for frac, Z, A, p in rows:
         F2 = nuclear_form_factor_sq(theta, p, A, model)
-        term = F2
+        electron = np.asarray(theta < THETA_E_MAX, dtype=float) / (Z + 1.0)
+        term = (Z / (Z + 1.0)) * F2 + electron
         if include_incoherent:
-            term = term + A / (Z * (Z + 1.0)) * (1.0 - F2) * proton_form_factor_sq(
+            term = term + (1.0 / (Z + 1.0)) * (1.0 - F2) * proton_form_factor_sq(
                 theta, p
             )
         out += frac * term
@@ -1675,6 +1682,7 @@ def composition_scan(paths, momenta, cuts_mrad, ff_model, floor):
                         s=math.sqrt(q["chi_c2"] * q["B"]),
                         theta_FF=theta_ff,
                         rho=theta_ff / math.sqrt(q["chi_c2"] * q["B"]),
+                        theta_FF_over_theta_space=theta_ff / q["theta_space"],
                         eta_cut=q["eta_cut"],
                         mu2=q["mu2"],
                         eps_M=q["epsilon"],
@@ -1706,11 +1714,14 @@ def tail_ratio_scan(path, p_GeV, ff_model, floor, thetas_mrad):
         model,
         include_incoherent=bool(floor),
     )
+    expected_kernel = finite_size_kernel(
+        theta, q["tail_components"], model, include_incoherent=bool(floor)
+    )
     theta_ff = _theta_ff_effective(q["tail_components"])
     theta_nuc = HBARC_MEV_FM / (float(p_GeV) * MEV * 0.84)
     expected_floor = sum(
-        frac * A / (Z * (Z + 1.0))
-        for frac, Z, A, _ in _tail_component_tuple(q["tail_components"])
+        frac / (Z + 1.0)
+        for frac, Z, _, _ in _tail_component_tuple(q["tail_components"])
     )
     return [
         dict(
@@ -1722,11 +1733,14 @@ def tail_ratio_scan(path, p_GeV, ff_model, floor, thetas_mrad):
             theta_mrad=float(angle_mrad),
             h=float(density),
             tail_ratio=float(density * angle**3 / (2.0 * q["chi_c2"])),
+            expected_kernel=float(kernel),
             theta_FF_mrad=1000.0 * theta_ff,
             theta_nuc_mrad=1000.0 * theta_nuc,
             expected_floor=expected_floor if floor else 0.0,
         )
-        for angle_mrad, angle, density in zip(thetas_mrad, theta, h)
+        for angle_mrad, angle, density, kernel in zip(
+            thetas_mrad, theta, h, expected_kernel
+        )
     ]
 
 
