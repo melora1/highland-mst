@@ -52,6 +52,7 @@ _fn_projected.npz
 
 # local reduced-statistics repro harness
 _repro.py
+references/rev18_primary_sources/
 
 
 # =========================

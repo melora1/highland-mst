@@ -46,6 +46,7 @@ from physics import (
     dedx_of_E,
     dimensionless_moments_quad,
     energy_after,
+    electron_cutoff_weight,
     fit_log_asymptote,
     finite_size_kernel,
     composition_scan,
@@ -68,7 +69,7 @@ from physics import (
     validate_stopping_minima,
 )
 from sampling import TransformSampler
-from reduced_cache import ReducedSamplerCache
+from reduced_cache import ReducedSamplerCache, ReducedSamplerCache3D
 from simulation import (
     momentum_fractions,
     nominal_target_offset_cm,
@@ -381,7 +382,7 @@ def test_G_at_zero():
         for ff_model in ("gaussian", "uniform_sphere"):
             for floor in (True, False):
                 got = float(finite_size_kernel(0.0, components, ff_model, floor))
-                assert abs(got - 1.0) < 1e-12, (material, ff_model, floor, got)
+                assert abs(got - 1.0) <= 1e-15, (material, ff_model, floor, got)
 
 
 @test
@@ -393,6 +394,16 @@ def electron_term_has_kinematic_cutoff():
                                      "gaussian", True))
     above = float(finite_size_kernel(theta_e, components, "gaussian", True))
     assert abs((below - above) - 1.0 / (cu.Z + 1.0)) < 1e-12
+    smooth = electron_cutoff_weight(
+        np.array([0.0, 0.5 * theta_e, theta_e, 2.0 * theta_e]), "smooth"
+    )
+    assert np.allclose(smooth, [1.0, 0.75, 0.0, 0.0], atol=0.0, rtol=0.0)
+    assert np.all(electron_cutoff_weight(smooth, "off") == 0.0)
+    smooth_below = float(electron_cutoff_weight(np.nextafter(theta_e, 0.0), "smooth"))
+    assert smooth_below < 1e-14
+    for mode in ("step", "smooth"):
+        got = float(finite_size_kernel(0.0, components, "gaussian", True, mode))
+        assert abs(got - 1.0) <= 1e-15
 
 
 @test
@@ -603,6 +614,28 @@ def reduced_cache_interpolates_smooth_coordinates_and_rejects_extrapolation():
             assert "outside" in str(exc)
         else:
             raise AssertionError("reduced cache silently extrapolated")
+
+    rho_e = np.array([0.05, 0.5])
+    inverse3 = np.empty((2, 2, 2, len(u)))
+    for i, bb in enumerate(B):
+        for j, rr in enumerate(rho):
+            for k, re in enumerate(rho_e):
+                inverse3[i, j, k] = shape * (
+                    4.0 + 1.0 / bb + math.log(rr) + math.log(re)
+                )
+    cache3 = ReducedSamplerCache3D(
+        B, rho, rho_e, u, inverse3, "gaussian", True
+    )
+    draws3 = cache3.sample_eta(
+        15.0, 1.0, 0.2, 2.0, np.array([0.1, 0.5, 0.9])
+    )
+    assert np.all(np.isfinite(draws3)) and np.all(draws3 <= 2.0)
+    try:
+        cache3.sample_eta(15.0, 1.0, 0.6, 2.0, np.array([0.5]))
+    except RuntimeError as exc:
+        assert "outside" in str(exc)
+    else:
+        raise AssertionError("3D reduced cache silently extrapolated")
 
 
 @test

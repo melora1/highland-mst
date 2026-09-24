@@ -62,7 +62,8 @@ HBARC_MEV_FM = 197.3
 FORM_FACTOR_MODELS = ("none", "gaussian", "uniform_sphere")
 FF_MODELS = ("point", "gauss", "sphere")
 THETA_E_MAX = M_E / M_MU
-FINITE_SIZE_KERNEL_VERSION = "proton-electron-v2"
+ELECTRON_CUTOFF_MODES = ("step", "smooth", "off")
+FINITE_SIZE_KERNEL_VERSION = "proton-electron-v3"
 
 
 # Moliere's B equation is written with chi_a'^2 = 1.167 chi_a^2, while the
@@ -540,7 +541,35 @@ def proton_form_factor_sq(theta, p_gev: float):
     return (1.0 + q2_gev2 / 0.71) ** -4
 
 
-def finite_size_kernel(theta, components, model: str, include_incoherent=True):
+def electron_cutoff_weight(theta, mode="step", theta_max=THETA_E_MAX):
+    """Atomic-electron angular weight for the declared cutoff model.
+
+    ``smooth`` is a phase-space taper used as a model systematic,
+    ``max(1-(theta/theta_max)^2, 0)``.  It is not described as an exact
+    muon--electron differential cross section.
+    """
+    mode = str(mode).lower()
+    if mode not in ELECTRON_CUTOFF_MODES:
+        raise ValueError(f"electron_cutoff must be one of {ELECTRON_CUTOFF_MODES}")
+    theta = np.asarray(theta, float)
+    if mode == "off":
+        return np.zeros_like(theta)
+    theta_max = float(theta_max)
+    if theta_max <= 0.0:
+        raise ValueError("electron cutoff angle must be positive")
+    if mode == "step":
+        return np.asarray(theta < theta_max, dtype=float)
+    return np.clip(1.0 - (theta / theta_max) ** 2, 0.0, 1.0)
+
+
+def finite_size_kernel(
+    theta,
+    components,
+    model: str,
+    include_incoherent=True,
+    electron_cutoff="step",
+    electron_theta_max=THETA_E_MAX,
+):
     """Scattering-kernel multiplier used inside the eikonal transform.
 
     The ``Z(Z+1)`` point-nucleus coefficient contains coherent nuclear and
@@ -566,7 +595,9 @@ def finite_size_kernel(theta, components, model: str, include_incoherent=True):
     out = np.zeros_like(theta)
     for frac, Z, A, p in rows:
         F2 = nuclear_form_factor_sq(theta, p, A, model)
-        electron = np.asarray(theta < THETA_E_MAX, dtype=float) / (Z + 1.0)
+        electron = electron_cutoff_weight(
+            theta, electron_cutoff, electron_theta_max
+        ) / (Z + 1.0)
         term = (Z / (Z + 1.0)) * F2 + electron
         if include_incoherent:
             term = term + (1.0 / (Z + 1.0)) * (1.0 - F2) * proton_form_factor_sq(
@@ -583,6 +614,8 @@ def _finite_size_characteristic_table(
     components,
     model: str,
     include_incoherent: bool,
+    electron_cutoff: str = "step",
+    electron_theta_max: float = THETA_E_MAX,
 ):
     """Numerically accumulate Omega(t) and return exp(-Omega) on a fixed grid."""
     chi_c2 = float(chi_c2)
@@ -596,7 +629,14 @@ def _finite_size_characteristic_table(
     p_min = min(row[3] for row in components)
     theta_max = max(2.0, 20.0 / p_min)
     theta = np.geomspace(max(a * 1.0e-5, 1.0e-12), theta_max, 7001)
-    G = finite_size_kernel(theta, components, model, include_incoherent)
+    G = finite_size_kernel(
+        theta,
+        components,
+        model,
+        include_incoherent,
+        electron_cutoff,
+        electron_theta_max,
+    )
     density = 2.0 * chi_c2 * theta * G / (theta * theta + a2) ** 2
     dtheta = np.diff(theta)
     weights = np.empty_like(theta)
@@ -626,6 +666,8 @@ def transform_moments_finite_size(
     model: str,
     *,
     include_incoherent: bool = True,
+    electron_cutoff: str = "step",
+    electron_theta_max: float = THETA_E_MAX,
 ):
     """Accepted moments with the finite-size kernel inside the transform."""
     if chi_c2 <= 0.0 or theta_cut <= 0.0:
@@ -636,6 +678,8 @@ def transform_moments_finite_size(
         return _finite_size_high_eta_moments(
             chi_c2, B, theta_cut, components, model,
             include_incoherent=include_incoherent,
+            electron_cutoff=electron_cutoff,
+            electron_theta_max=electron_theta_max,
         )
     t, characteristic = _finite_size_characteristic_table(
         float(chi_c2),
@@ -643,6 +687,8 @@ def transform_moments_finite_size(
         _tail_component_tuple(components),
         _normalize_form_factor(model),
         bool(include_incoherent),
+        str(electron_cutoff).lower(),
+        float(electron_theta_max),
     )
     x = eta * t
     inv_t = np.zeros_like(t)
@@ -679,6 +725,8 @@ def untruncated_finite_size_moments(
     model: str,
     *,
     include_incoherent: bool = True,
+    electron_cutoff: str = "step",
+    electron_theta_max: float = THETA_E_MAX,
 ):
     """Exact full-acceptance M2 and M4 for the compound-scatter kernel.
 
@@ -697,7 +745,14 @@ def untruncated_finite_size_moments(
     p_min = min(row[3] for row in rows)
     theta_max = max(2.0, 40.0 / p_min)
     theta = np.geomspace(max(math.sqrt(a2) * 1.0e-6, 1.0e-13), theta_max, 20001)
-    G = finite_size_kernel(theta, rows, model, include_incoherent)
+    G = finite_size_kernel(
+        theta,
+        rows,
+        model,
+        include_incoherent,
+        electron_cutoff,
+        electron_theta_max,
+    )
     rate = 2.0 * chi_c2 * theta * G / (theta * theta + a2) ** 2
     kappa2 = float(simpson(theta**2 * rate, x=theta))
     kappa4 = float(simpson(theta**4 * rate, x=theta))
@@ -712,6 +767,8 @@ def _finite_size_high_eta_moments(
     model: str,
     *,
     include_incoherent: bool,
+    electron_cutoff: str,
+    electron_theta_max: float,
 ):
     """Stable accepted moments beyond the direct Hankel cancellation range.
 
@@ -732,16 +789,27 @@ def _finite_size_high_eta_moments(
     Fc0, M20, M40 = transform_moments_finite_size(
         chi_c2, B, theta_join, rows, model,
         include_incoherent=include_incoherent,
+        electron_cutoff=electron_cutoff,
+        electron_theta_max=electron_theta_max,
     )
     full_M2, full_M4 = untruncated_finite_size_moments(
         chi_c2, B, rows, model,
         include_incoherent=include_incoherent,
+        electron_cutoff=electron_cutoff,
+        electron_theta_max=electron_theta_max,
     )
     a2 = chi_c2 * B / (MOLIERE_SCREENING_FACTOR * math.exp(B))
     p_min = min(row[3] for row in rows)
     theta_max = max(2.0, 40.0 / p_min)
     theta = np.geomspace(theta_join, theta_max, 16001)
-    G = finite_size_kernel(theta, rows, model, include_incoherent)
+    G = finite_size_kernel(
+        theta,
+        rows,
+        model,
+        include_incoherent,
+        electron_cutoff,
+        electron_theta_max,
+    )
     rate = 2.0 * chi_c2 * theta * G / (theta * theta + a2) ** 2
 
     def survival(power):
@@ -778,6 +846,8 @@ def transform_radial_density(
     model: str,
     *,
     include_incoherent: bool = True,
+    electron_cutoff: str = "step",
+    electron_theta_max: float = THETA_E_MAX,
 ):
     """Return the radial density h(theta)=2*pi*theta*P(theta)."""
     values = np.atleast_1d(np.asarray(theta, float))
@@ -787,6 +857,8 @@ def transform_radial_density(
         _tail_component_tuple(components),
         _normalize_form_factor(model),
         bool(include_incoherent),
+        str(electron_cutoff).lower(),
+        float(electron_theta_max),
     )
     scale = math.sqrt(float(chi_c2) * float(B))
     # Fixed-grid Simpson weights let the log-grid transforms run as bounded
@@ -814,11 +886,14 @@ def finite_size_cdf_eta(
     components,
     model: str,
     include_incoherent: bool = True,
+    electron_cutoff: str = "step",
+    electron_theta_max: float = THETA_E_MAX,
 ):
     """Transform-derived radial CDF on a reduced-angle grid."""
     t, characteristic = _finite_size_characteristic_table(
         float(chi_c2), float(B), _tail_component_tuple(components),
         _normalize_form_factor(model), bool(include_incoherent),
+        str(electron_cutoff).lower(), float(electron_theta_max),
     )
     eta = np.unique(np.concatenate([
         np.linspace(0.0, 10.0, 3001),
@@ -855,10 +930,13 @@ def finite_size_eta_from_uniform(
     model: str,
     *,
     include_incoherent: bool = True,
+    electron_cutoff: str = "step",
+    electron_theta_max: float = THETA_E_MAX,
 ):
     eta, cdf = finite_size_cdf_eta(
         float(chi_c2), float(B), _tail_component_tuple(components),
         _normalize_form_factor(model), bool(include_incoherent),
+        str(electron_cutoff).lower(), float(electron_theta_max),
     )
     return np.interp(np.asarray(uniform, float), cdf, eta)
 
@@ -1043,6 +1121,8 @@ def constant_calibration(
     theta_cut: float = THETA_CUT,
     nmax: int = 2,
     form_factor: str = "none",
+    include_incoherent: bool = True,
+    electron_cutoff: str = "step",
 ):
     rp = reduced_parameters(X_by_material, p_gev)
     form_factor = _normalize_form_factor(form_factor)
@@ -1054,7 +1134,9 @@ def constant_calibration(
         )
     else:
         Fc, M2, M4 = transform_moments_finite_size(
-            rp["chi_c2"], rp["B"], theta_cut, components, form_factor
+            rp["chi_c2"], rp["B"], theta_cut, components, form_factor,
+            include_incoherent=include_incoherent,
+            electron_cutoff=electron_cutoff,
         )
     trms = math.sqrt(M2)
     t0 = rp["theta_space"] / math.sqrt(2.0)
@@ -1310,6 +1392,8 @@ def calibrate_pofx(
     screening_weight: str = "dchi_c2",
     form_factor: str = "none",
     include_incoherent: bool = True,
+    electron_cutoff: str = "step",
+    electron_theta_max: float = THETA_E_MAX,
 ):
     if path_x_over_x0(path) <= 0:
         raise ValueError("empty path")
@@ -1324,6 +1408,8 @@ def calibrate_pofx(
         Fc, M2, M4 = transform_moments_finite_size(
             c2, B, theta_cut, components, form_factor,
             include_incoherent=bool(include_incoherent),
+            electron_cutoff=electron_cutoff,
+            electron_theta_max=electron_theta_max,
         )
     trms = math.sqrt(max(M2, 0.0))
     xx0 = path_x_over_x0(path)
@@ -1357,6 +1443,8 @@ def calibrate_pofx(
         theta_space_incident=tspace_incident,
         clipped_fraction=radial_total_mass(B, nmax=nmax)[1],
         screening_weight=screening_weight,
+        electron_cutoff=str(electron_cutoff).lower(),
+        electron_theta_max=float(electron_theta_max),
         tail_components=components,
         slices=slices,
         **ff_diag,
@@ -1371,6 +1459,8 @@ def calibrate_pofx_transform(
     screening_weight: str = "dchi_c2",
     form_factor: str = "none",
     include_incoherent: bool = True,
+    electron_cutoff: str = "step",
+    electron_theta_max: float = THETA_E_MAX,
 ):
     """Segmented-p calibration using the unspliced characteristic transform.
 
@@ -1394,6 +1484,8 @@ def calibrate_pofx_transform(
             components,
             model,
             include_incoherent=include_incoherent,
+            electron_cutoff=electron_cutoff,
+            electron_theta_max=electron_theta_max,
         )
     xx0 = path_x_over_x0(path)
     theta0_px, beta_eff = highland_core_pofx_model(slices, xx0)
@@ -1427,6 +1519,8 @@ def calibrate_pofx_transform(
         screening_weight=screening_weight,
         form_factor=model,
         include_incoherent=bool(include_incoherent),
+        electron_cutoff=str(electron_cutoff).lower(),
+        electron_theta_max=float(electron_theta_max),
         tail_components=components,
         slices=slices,
     )
@@ -1498,6 +1592,8 @@ def _log_h_grid(calibration, model: str, floor: bool, theta_max_rad: float):
         calibration["tail_components"],
         model,
         include_incoherent=floor,
+        electron_cutoff=calibration.get("electron_cutoff", "step"),
+        electron_theta_max=calibration.get("electron_theta_max", THETA_E_MAX),
     )
     if np.any(~core):
         a2 = (
@@ -1511,6 +1607,8 @@ def _log_h_grid(calibration, model: str, floor: bool, theta_max_rad: float):
             calibration["tail_components"],
             model,
             include_incoherent=floor,
+            electron_cutoff=calibration.get("electron_cutoff", "step"),
+            electron_theta_max=calibration.get("electron_theta_max", THETA_E_MAX),
         )
         h[~core] = (
             2.0
@@ -1623,7 +1721,8 @@ def efficiency_scan(path, p_GeV, ff_model, floor, cuts_mrad):
 
 
 def _constant_transform_calibration(
-    X_by_material, p_GeV, theta_cut, model, floor
+    X_by_material, p_GeV, theta_cut, model, floor,
+    electron_cutoff="step",
 ):
     """Constant-momentum transform result used by composition/collapse scans."""
     rp = reduced_parameters(X_by_material, float(p_GeV))
@@ -1636,6 +1735,7 @@ def _constant_transform_calibration(
         Fc, M2, M4 = transform_moments_finite_size(
             rp["chi_c2"], rp["B"], float(theta_cut), components, model,
             include_incoherent=bool(floor),
+            electron_cutoff=electron_cutoff,
         )
     theta_rms = math.sqrt(max(M2, 0.0))
     return dict(
@@ -1648,10 +1748,13 @@ def _constant_transform_calibration(
         eta_cut=float(theta_cut) / math.sqrt(rp["chi_c2"] * rp["B"]),
         mu2=M2 / (rp["chi_c2"] * rp["B"]),
         tail_components=components,
+        electron_cutoff=str(electron_cutoff).lower(),
     )
 
 
-def composition_scan(paths, momenta, cuts_mrad, ff_model, floor):
+def composition_scan(
+    paths, momenta, cuts_mrad, ff_model, floor, electron_cutoff="step"
+):
     """Return the pre-registered composition diagnostics for every scan row."""
     model = _normalize_ff_model(ff_model)
     rows = []
@@ -1666,6 +1769,7 @@ def composition_scan(paths, momenta, cuts_mrad, ff_model, floor):
                     float(cut_mrad) * 1.0e-3,
                     model,
                     bool(floor),
+                    electron_cutoff,
                 )
                 theta_ff = _theta_ff_effective(q["tail_components"])
                 rows.append(
@@ -1682,11 +1786,13 @@ def composition_scan(paths, momenta, cuts_mrad, ff_model, floor):
                         s=math.sqrt(q["chi_c2"] * q["B"]),
                         theta_FF=theta_ff,
                         rho=theta_ff / math.sqrt(q["chi_c2"] * q["B"]),
+                        rho_e=THETA_E_MAX / math.sqrt(q["chi_c2"] * q["B"]),
                         theta_FF_over_theta_space=theta_ff / q["theta_space"],
                         eta_cut=q["eta_cut"],
                         mu2=q["mu2"],
                         eps_M=q["epsilon"],
                         theta_space=q["theta_space"],
+                        electron_cutoff=str(electron_cutoff).lower(),
                     )
                 )
     return rows

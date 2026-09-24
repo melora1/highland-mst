@@ -23,7 +23,7 @@ from scipy.optimize import minimize_scalar
 from scipy.special import ndtr
 
 from analysis import AXIAL_ORDERED, OFFCU_ORDERED, PATHS
-from config import MATERIALS
+from config import M_E, M_MU, MATERIALS
 from physics import (
     HBARC_MEV_FM,
     Layer,
@@ -239,6 +239,10 @@ def main():
     ap.add_argument("--theta-cut-mrad", type=float, nargs="+", default=[200.0], help="physical angular cuts to evaluate in addition to --k")
     ap.add_argument("--u-bands", type=float, nargs="+", default=None, help="optional reduced-angle edges; default uses theta_FF/theta_nuc per run")
     ap.add_argument("--n-generated", type=int, default=None, help="number of primaries; permits exit fraction and Fc relative to all generated events")
+    ap.add_argument(
+        "--n-generated-label", action="append", default=[],
+        help="label=count; per-transport primary count (overrides --n-generated)",
+    )
     ap.add_argument("--out", default=None, help="truncated-moment CSV")
     ap.add_argument("--core-out", default=None, help="core-width CSV; defaults beside --out")
     ap.add_argument("--bands-out", default=None, help="band-decomposition CSV; defaults beside --out")
@@ -251,6 +255,18 @@ def main():
         label, path = spec.split("=", 1)
         files[label] = path
     data = {lab: load_exit_angles(f) for lab, f in files.items()}
+    generated_by_label = {}
+    for spec in a.n_generated_label:
+        if "=" not in spec:
+            raise ValueError("--n-generated-label must be label=count")
+        label, count = spec.split("=", 1)
+        if label not in files:
+            raise ValueError(f"generated-count label {label!r} has no --file")
+        generated_by_label[label] = int(count)
+
+    def generated_count(label, n_exit):
+        value = generated_by_label.get(label, a.n_generated)
+        return int(n_exit if value is None else value)
 
     target_label, X, ordered = make_model_spec(a)
     floor = a.floor == "on"
@@ -260,6 +276,7 @@ def main():
 
     core_rows = []
     for lab, (ang, theta_x, theta_y) in data.items():
+        n_generated = generated_count(lab, ang.size)
         # For a Rayleigh radial core h(theta)=2 theta/s^2 exp(-theta^2/s^2),
         # median = s*sqrt(ln 2) and s is the radial Gaussian-core RMS.
         core_g4 = float(np.median(ang) / math.sqrt(math.log(2.0)))
@@ -272,8 +289,8 @@ def main():
                 target=target_label,
                 p=a.p,
                 n_exit=ang.size,
-                n_generated=a.n_generated if a.n_generated is not None else ang.size,
-                exit_fraction=ang.size / (a.n_generated if a.n_generated is not None else ang.size),
+                n_generated=n_generated,
+                exit_fraction=ang.size / n_generated,
                 theta_space_model=model_core,
                 theta_space_g4_median=core_g4,
                 core_frac_model_over_g4=model_core / core_g4 - 1.0,
@@ -292,6 +309,7 @@ def main():
 
     rows = []
     band_rows = []
+    theta_e = theta_ff = theta_nuc = np.nan
     if a.u_bands is not None:
         bands = sorted(set(float(x) for x in a.u_bands))
         if len(bands) < 2 or bands[0] < 0:
@@ -304,21 +322,28 @@ def main():
             1000.0 * a.p * nuclear_radius_fm(MATERIALS[a.material].A)
         )
         theta_nuc = HBARC_MEV_FM / (1000.0 * a.p * 0.84)
-        u_ff, u_nuc = theta_ff / theta0, theta_nuc / theta0
+        theta_e = M_E / M_MU
+        u_e, u_ff, u_nuc = (
+            theta_e / theta0, theta_ff / theta0, theta_nuc / theta0
+        )
         u_max = max(float(max(np.max(value[0]) for value in data.values()) / theta0), u_nuc)
-        requested = [
-            (0.0, 1.0), (1.0, 3.0), (3.0, 0.5*u_ff),
-            (0.5*u_ff, 2.0*u_ff), (2.0*u_ff, u_nuc), (u_nuc, u_max),
-        ]
-        band_pairs = [(lo, hi) for lo, hi in requested if hi > lo]
+        # Keep the diagnostic reduced-angle boundaries while making the three
+        # physical regime boundaries exact bin edges.
+        edges = sorted(set(
+            [0.0, 1.0, 3.0, u_e, 0.5*u_ff, u_ff, 2.0*u_ff, u_nuc, u_max]
+        ))
+        band_pairs = [(lo, hi) for lo, hi in zip(edges[:-1], edges[1:])
+                      if hi > lo]
     for lab, (ang, _theta_x, _theta_y) in data.items():
+        n_generated = generated_count(lab, ang.size)
         band_rows.extend(
             dict(
                 transport=lab, ff_model=a.ff_model, floor=floor,
-                target=target_label, p=a.p, **r
+                target=target_label, p=a.p, theta_e=theta_e,
+                theta_FF=theta_ff, theta_nuc=theta_nuc, **r
             )
             for r in band_decomposition_pairs(
-                ang, model_at, theta0, band_pairs, a.n_generated
+                ang, model_at, theta0, band_pairs, n_generated
             )
         )
         cuts = [("reduced_k", float(k) * theta0, float(k)) for k in a.k]
@@ -330,7 +355,7 @@ def main():
                 continue
             seen.add(key)
             q = model_at(cut)
-            g = sample_moments(ang, cut, a.n_generated)
+            g = sample_moments(ang, cut, n_generated)
             if np.isfinite(g["theta_rms"]) and g["theta_rms"] > 0:
                 rms_frac = float(q["theta_rms"] / g["theta_rms"] - 1.0)
                 weight_bias = float((g["theta_rms"] / q["theta_rms"]) ** 2 - 1.0)

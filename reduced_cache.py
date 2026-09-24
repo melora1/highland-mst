@@ -28,6 +28,7 @@ from physics import (
     HBARC_MEV_FM,
     MEV,
     MOLIERE_SCREENING_FACTOR,
+    THETA_E_MAX,
     _finite_size_characteristic_table,
     _normalize_form_factor,
     finite_size_kernel,
@@ -40,6 +41,7 @@ from physics import (
 # must retain its absolute survival probability; extending the oscillatory
 # Hankel CDF farther only makes that small probability round to one.
 HANKEL_ETA_JOIN = 12.0
+CACHE_SCHEMA_VERSION = "reduced-rhoe-v1"
 
 
 def default_u_grid():
@@ -68,7 +70,7 @@ def _canonical_components(rho):
     return ((1.0, Z, A, p_reduced),)
 
 
-def _node_cdf(B, rho, eta_grid, model, floor, components):
+def _node_cdf(B, rho, eta_grid, model, floor, components, rho_e=None):
     """Build one untruncated reduced CDF.
 
     The Hankel transform is used through ``HANKEL_ETA_JOIN``. Beyond that point the
@@ -84,8 +86,9 @@ def _node_cdf(B, rho, eta_grid, model, floor, components):
         raise ValueError("eta_grid must be strictly increasing and start at zero")
     c2 = 1.0 / B  # s=sqrt(c2*B)=1 in reduced coordinates
     components = tuple(tuple(map(float, row)) for row in components)
+    transform_args = () if rho_e is None else ("step", float(rho_e))
     t, characteristic = _finite_size_characteristic_table(
-        c2, B, components, model, bool(floor)
+        c2, B, components, model, bool(floor), *transform_args
     )
     join = HANKEL_ETA_JOIN
     core_mask = eta_grid <= join
@@ -106,7 +109,10 @@ def _node_cdf(B, rho, eta_grid, model, floor, components):
 
     tail_eta = eta_grid[core_eta.size - 1:]
     a2 = 1.0 / (MOLIERE_SCREENING_FACTOR * math.exp(B))
-    G = finite_size_kernel(tail_eta, components, model, bool(floor))
+    kernel_args = () if rho_e is None else ("step", float(rho_e))
+    G = finite_size_kernel(
+        tail_eta, components, model, bool(floor), *kernel_args
+    )
     rate = (2.0 / B) * tail_eta * G / (tail_eta * tail_eta + a2) ** 2
     reverse = cumulative_trapezoid(rate[::-1], tail_eta[::-1], initial=0.0)
     survival_shape = -reverse[::-1]
@@ -118,7 +124,8 @@ def _node_cdf(B, rho, eta_grid, model, floor, components):
         - np.trapezoid(2.0 * core_eta * core_cdf, core_eta)
     )
     full_n2, _ = untruncated_finite_size_moments(
-        c2, B, components, model, include_incoherent=bool(floor)
+        c2, B, components, model, include_incoherent=bool(floor),
+        electron_theta_max=(THETA_E_MAX if rho_e is None else float(rho_e)),
     )
     tail_mass = max(float(survival_shape[0]), 0.0)
     denominator = tail_n2 - tail_mass * core_n2 / core_mass
@@ -155,6 +162,15 @@ def _node_cdf(B, rho, eta_grid, model, floor, components):
 def _node_inverse(args):
     B, rho, eta_grid, model, floor, components, u_grid = args
     cdf = _node_cdf(B, rho, eta_grid, model, floor, components)
+    keep = np.concatenate(([True], np.diff(cdf) > 0.0))
+    return np.interp(u_grid, cdf[keep], eta_grid[keep])
+
+
+def _node_inverse_3d(args):
+    B, rho, rho_e, eta_grid, model, floor, components, u_grid = args
+    cdf = _node_cdf(
+        B, rho, eta_grid, model, floor, components, rho_e=float(rho_e)
+    )
     keep = np.concatenate(([True], np.diff(cdf) > 0.0))
     return np.interp(u_grid, cdf[keep], eta_grid[keep])
 
@@ -227,6 +243,53 @@ def build_reduced_cache(
         inverse=inverse,
         ff_model=model,
         floor=bool(floor),
+    )
+
+
+def build_reduced_cache_3d(
+    B_grid,
+    rho_grid,
+    rho_e_grid,
+    eta_grid,
+    ff_model,
+    floor,
+    *,
+    u_grid=None,
+    workers=1,
+):
+    """Build the universal ``(B, rho, rho_e)`` candidate cache.
+
+    This constructor is intentionally separate from the blocked legacy 2D
+    builder.  A production caller must still pass the real-path heterogeneity
+    gate; the three reduced coordinates do not encode elemental composition.
+    """
+    model = _normalize_form_factor(ff_model)
+    if model == "none":
+        raise ValueError("the reduced finite-size cache requires a form factor")
+    B_grid = np.asarray(B_grid, float)
+    rho_grid = np.asarray(rho_grid, float)
+    rho_e_grid = np.asarray(rho_e_grid, float)
+    eta_grid = np.asarray(eta_grid, float)
+    u_grid = default_u_grid() if u_grid is None else np.asarray(u_grid, float)
+    for name, grid in (("B", B_grid), ("rho", rho_grid), ("rho_e", rho_e_grid)):
+        if len(grid) < 2 or np.any(grid <= 0.0) or np.any(np.diff(grid) <= 0.0):
+            raise ValueError(f"{name}_grid must contain at least two increasing positives")
+    inverse = np.empty(
+        (len(B_grid), len(rho_grid), len(rho_e_grid), len(u_grid)), np.float32
+    )
+    jobs = [
+        (float(B), float(rho), float(rho_e), eta_grid, model, bool(floor),
+         _canonical_components(rho), u_grid)
+        for B in B_grid for rho in rho_grid for rho_e in rho_e_grid
+    ]
+    if int(workers) > 1:
+        with ProcessPoolExecutor(max_workers=int(workers)) as pool:
+            values = list(pool.map(_node_inverse_3d, jobs, chunksize=1))
+    else:
+        values = list(map(_node_inverse_3d, jobs))
+    inverse[:] = np.asarray(values, np.float32).reshape(inverse.shape)
+    return ReducedSamplerCache3D(
+        B_grid, rho_grid, rho_e_grid, u_grid, inverse, model, bool(floor)
     )
 
 
@@ -369,3 +432,136 @@ class ReducedSamplerCache:
 
     def truncated_m2(self, B, rho, eta_cut, order=None):
         return self.truncated_moment(B, rho, eta_cut, 2)
+
+
+@dataclass
+class ReducedSamplerCache3D:
+    """Trilinear inverse-CDF table in ``(1/B, ln rho, ln rho_e)``."""
+
+    B_grid: np.ndarray
+    rho_grid: np.ndarray
+    rho_e_grid: np.ndarray
+    u_grid: np.ndarray
+    inverse: np.ndarray
+    ff_model: str
+    floor: bool
+    kernel_version: str = FINITE_SIZE_KERNEL_VERSION
+    cache_version: str = CACHE_SCHEMA_VERSION
+
+    def __post_init__(self):
+        if str(self.kernel_version) != FINITE_SIZE_KERNEL_VERSION:
+            raise RuntimeError(
+                f"3D cache kernel {self.kernel_version!r} does not match "
+                f"{FINITE_SIZE_KERNEL_VERSION!r}"
+            )
+        if str(self.cache_version) != CACHE_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"3D cache schema {self.cache_version!r} does not match "
+                f"{CACHE_SCHEMA_VERSION!r}"
+            )
+        self.B_grid = np.asarray(self.B_grid, float)
+        self.rho_grid = np.asarray(self.rho_grid, float)
+        self.rho_e_grid = np.asarray(self.rho_e_grid, float)
+        self.u_grid = np.asarray(self.u_grid, float)
+        self.inverse = np.asarray(self.inverse, np.float32)
+        expected = (
+            len(self.B_grid), len(self.rho_grid), len(self.rho_e_grid),
+            len(self.u_grid),
+        )
+        if self.inverse.shape != expected:
+            raise ValueError(
+                f"inverse table has shape {self.inverse.shape}, expected {expected}"
+            )
+        for name, grid in (("B", self.B_grid), ("rho", self.rho_grid),
+                           ("rho_e", self.rho_e_grid), ("u", self.u_grid)):
+            if np.any(np.diff(grid) <= 0.0):
+                raise ValueError(f"{name} grid must be strictly increasing")
+        self._x_grid = 1.0 / self.B_grid[::-1]
+        self._y_grid = np.log(self.rho_grid)
+        self._z_grid = np.log(self.rho_e_grid)
+
+    def save(self, path):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            path, B_grid=self.B_grid, rho_grid=self.rho_grid,
+            rho_e_grid=self.rho_e_grid, u_grid=self.u_grid,
+            inverse=self.inverse, ff_model=np.asarray(self.ff_model),
+            floor=np.asarray(self.floor), kernel_version=np.asarray(self.kernel_version),
+            cache_version=np.asarray(self.cache_version),
+        )
+
+    @classmethod
+    def load(cls, path):
+        with np.load(path, allow_pickle=False) as data:
+            required = {"rho_e_grid", "kernel_version", "cache_version"}
+            missing = required.difference(data.files)
+            if missing:
+                raise RuntimeError(
+                    "cache is not a current 3D rho_e table; missing "
+                    + ", ".join(sorted(missing))
+                )
+            return cls(
+                data["B_grid"], data["rho_grid"], data["rho_e_grid"],
+                data["u_grid"], data["inverse"], str(data["ff_model"]),
+                bool(data["floor"]), str(data["kernel_version"]),
+                str(data["cache_version"]),
+            )
+
+    @staticmethod
+    def _bracket(grid, value, label):
+        value = float(value)
+        if not (grid[0] <= value <= grid[-1]):
+            raise RuntimeError(
+                f"3D reduced-cache {label}={value:.9g} outside "
+                f"[{grid[0]:.9g}, {grid[-1]:.9g}]"
+            )
+        i = min(max(np.searchsorted(grid, value)-1, 0), len(grid)-2)
+        t = (value-grid[i])/(grid[i+1]-grid[i])
+        return int(i), float(t)
+
+    def _corners(self, B, rho, rho_e):
+        ix, tx = self._bracket(self._x_grid, 1.0/float(B), "1/B")
+        iy, ty = self._bracket(self._y_grid, math.log(float(rho)), "ln(rho)")
+        iz, tz = self._bracket(self._z_grid, math.log(float(rho_e)), "ln(rho_e)")
+        ib = (len(self.B_grid)-1-ix, len(self.B_grid)-2-ix)
+        tables, weights = [], []
+        for xb, wx in ((0, 1-tx), (1, tx)):
+            for yb, wy in ((0, 1-ty), (1, ty)):
+                for zb, wz in ((0, 1-tz), (1, tz)):
+                    tables.append(self.inverse[ib[xb], iy+yb, iz+zb])
+                    weights.append(wx*wy*wz)
+        return tables, weights
+
+    def _inverse_curve(self, B, rho, rho_e):
+        tables, weights = self._corners(B, rho, rho_e)
+        return sum(w*q for q, w in zip(tables, weights))
+
+    def cdf_at(self, B, rho, rho_e, eta):
+        curve = self._inverse_curve(B, rho, rho_e)
+        return float(np.interp(float(eta), curve, self.u_grid, left=0.0, right=1.0))
+
+    def inverse_at(self, B, rho, rho_e, probability):
+        p = np.asarray(probability, float)
+        if np.any((p < 0.0) | (p >= 1.0)):
+            raise ValueError("probabilities must lie in [0,1)")
+        return np.interp(p, self.u_grid, self._inverse_curve(B, rho, rho_e))
+
+    def sample_eta(self, B, rho, rho_e, eta_cut, uniform):
+        Fc = self.cdf_at(B, rho, rho_e, eta_cut)
+        if not (0.0 < Fc <= 1.0):
+            raise RuntimeError(f"invalid 3D reduced-cache acceptance CDF {Fc}")
+        u = np.asarray(uniform, float)
+        return self.inverse_at(
+            B, rho, rho_e, np.minimum(u*Fc, self.u_grid[-1])
+        )
+
+    def truncated_moment(self, B, rho, rho_e, eta_cut, power):
+        Fc = self.cdf_at(B, rho, rho_e, eta_cut)
+        probabilities = np.unique(np.concatenate((
+            self.u_grid[self.u_grid < Fc], np.asarray([Fc])
+        )))
+        eta = self.inverse_at(
+            B, rho, rho_e, np.minimum(probabilities, self.u_grid[-1])
+        )
+        return float(np.trapezoid(eta**int(power), probabilities)/Fc)

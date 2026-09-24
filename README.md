@@ -8,7 +8,15 @@ The Python production study is a **controlled model-internal detector study**, n
 
 The former 100 mrad form-factor splice is superseded and must not be used. Finite-size theory now inserts `G(q)` inside the screened-Rutherford characteristic exponent and obtains the angular law by an unexpanded Hankel transform. The kernel separates coherent nuclear, atomic-electron, and Pauli-blocked incoherent proton scattering. It has `G(0)=1`, cuts off the electron term at `theta=m_e/m_mu`, transitions to the proton-only quasi-elastic floor `1/(Z+1)`, and terminates that floor with a dipole proton form factor. Gaussian and uniform-sphere nuclear shapes are both regenerated, with the proton-floor-omitted difference reported as a systematic.
 
-The inverse-CDF sampler is generated from the transformed density. `reduced_cache.py` moves the Hankel inversion into a precomputed table in `(1/B, ln rho)`, applies truncation as `u -> u F(eta_cut)`, and raises on every support miss rather than extrapolating. Empirical five- and 25-kink support has been measured for target and reference paths: together it spans `B=3.251--16.158` and `rho=0.492--934.1`, far beyond the four nominal path values. The production grid covers `B=3.175--18.343` and `rho=0.337--1362.344`. Those caches encode the superseded nucleon-floor kernel and are now rejected by a required kernel-version field. Finite-size detector production remains gated until corrected caches pass interpolation-only and real-path reduction tests.
+The inverse-CDF sampler is generated from the transformed density. The legacy
+two-coordinate cache is blocked and version-rejected. The corrected kernel adds
+`rho_e=(m_e/m_mu)/s`; `reduced_cache.py` now implements the candidate trilinear
+table in `(1/B, ln rho, ln rho_e)`. Its exact-node prerequisite fails the
+0.01-percentage-point real-path gate because those coordinates still discard
+material/form-factor heterogeneity: the worst nominal errors are 0.555 pp for
+Al, 0.068 pp for Al+Cu, and 0.147 pp for Pb. Only pure Cu passes (0.0048 pp).
+The validated full-component inverse-CDF sampler is retained as a diagnostic
+fallback, and finite-size detector production remains disabled.
 
 The reference geometry replaces Pb by Cu. `geometry.py` traces exact ordered ray segments `[Al_up, Cu_up, Pb, Cu_down, Al_down]`; energy loss is not reconstructed from unordered totals.
 
@@ -115,8 +123,30 @@ The corrected-kernel nominal-path reduction check fails the 0.01 percentage-
 point gate by 0.12--1.06 percentage points.  The separate atomic-electron
 cutoff adds the reduced coordinate `rho_e=(m_e/m_mu)/s`, so a two-coordinate
 `(B,rho)` cache is mathematically insufficient even before material-mixture and
-local-`p(X)` errors are considered.  The current 2D cache builder is therefore
-blocked pending an added axis or a validated direct-sampler fallback.
+local-`p(X)` errors are considered. The implemented 3D candidate also fails as
+summarized above, so its off-node and KS stages are deliberately not used to
+authorize production. The full-component direct fallback passes a worst-case
+nominal KS check (`D=0.00245`, `p=0.180`) but is validation-only.
+
+## Rev. 18 publication package
+
+Run the consolidated analytic regeneration with:
+
+```bash
+.venv/bin/python rev18.py --section all --out out/rev18
+```
+
+Individual sections (`a`, `b`, `c`, `d`, `f`, `g`, `hik`, `l`, `literature`,
+or `m`) can be regenerated independently. Every publication output receives a
+`*.metadata.json` sidecar containing the Git revision/dirty state, cache and
+kernel versions, floor/electron-cutoff choice, form factor, grid, seed, and UTC
+timestamp. `out/rev18/manuscript_output_manifest.csv` maps manuscript items to
+their generator and output path.
+
+The Lynch--Dahl primary article contains no numerical tables and does not show
+Cu/Pb at 11.6 or 26.7 radiation lengths; the requested direct extraction is
+therefore recorded as unavailable rather than inferred. MuScat Table 2's Al and
+Fe rows are transcribed to `out/rev18/literature/muscat_table2_Al_Fe.csv`.
 
 `tests.py` currently contains 41 physics/geometry and analysis closure tests.
 
